@@ -25,8 +25,8 @@ endif()
 # ---------------------------------------------------------------------
 
 add_library(cncl_rt_wal
-    src/wal.cpp
-    src/record.cpp
+    src/writer/writer.cpp
+    src/writers_dispatcher.cpp
     src/backend/file_backend.cpp
 )
 

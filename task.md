@@ -1,8 +1,8 @@
 # Task: RT Logging System Based on WAL Principles
 
-**Customer:** Canonical  
+**Customer:**  
 **Task set:** 2026-01-30 12:19 (UTC+1)  
-**Deadline:** 2026-02-02 23:59 (UTC+1)
+**Deadline:** couple days
 
 ## Task Statement
 
@@ -17,7 +17,7 @@ The solution must be suitable for use in real-time environments.
 - Input baseline: **existing WAL system**.
 - Output: **logging / journaling subsystem** for a real-time system.
 - Target environment: **real-time system**.
-- Customer: **Canonical**.
+- Customer: ****.
 - Delivery deadline: **2026-02-02 23:59 (UTC+1)**.
 
 No additional requirements, constraints, or acceptance criteria are explicitly provided in the task statement.
