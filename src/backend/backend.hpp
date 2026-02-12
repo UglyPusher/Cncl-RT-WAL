@@ -28,6 +28,7 @@ public:
     virtual void stop() = 0;
 
     // non-RT only
-    virtual void submit_batch(Span<const Record>) = 0;
+    virtual void submit_batch(std::span<const Record>) = 0;
     virtual void set_degrade(void) = 0;
 };
+}

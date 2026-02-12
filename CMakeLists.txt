@@ -5,9 +5,9 @@ project(cncl_rt_wal
     LANGUAGES CXX
 )
 
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
 # Global configuration
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,42 +15,22 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Default build type
 if (NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
-# ---------------------------------------------------------------------
-# Library target
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
+# Options
+# ------------------------------------------------------------------
 
-add_library(cncl_rt_wal
-    src/writer/writer.cpp
-    src/writers_dispatcher.cpp
-    src/backend/file_backend.cpp
-)
+option(CNCL_RT_WAL_BUILD_TESTS "Build unit tests" OFF)
+option(CNCL_RT_WAL_BUILD_FILE_BACKEND "Build file backend" ON)
 
-target_include_directories(cncl_rt_wal
-    PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
+# ------------------------------------------------------------------
+# Subdirectories
+# ------------------------------------------------------------------
 
-# ---------------------------------------------------------------------
-# Compile options (НЕ RT-финальные, но безопасные)
-# ---------------------------------------------------------------------
-
-target_compile_options(cncl_rt_wal
-    PRIVATE
-        -Wall
-        -Wextra
-        -Wpedantic
-)
-
-# ---------------------------------------------------------------------
-# Optional: tests
-# ---------------------------------------------------------------------
-
-option(CNCL_RT_WAL_BUILD_TESTS "Build tests" OFF)
+add_subdirectory(src)
 
 if (CNCL_RT_WAL_BUILD_TESTS)
     enable_testing()

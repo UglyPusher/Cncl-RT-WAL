@@ -1,10 +1,10 @@
-add_executable(wal_smoke
+add_executable(dispatcher_smoke
     dispatcher_smoke.cpp
 )
 
-target_link_libraries(wal_smoke
+target_link_libraries(dispatcher_smoke
     PRIVATE
-        cncl_rt_wal
+        cncl_rt_wal_core
 )
 
-add_test(NAME wal_smoke COMMAND wal_smoke)
+add_test(NAME dispatcher_smoke COMMAND dispatcher_smoke)
