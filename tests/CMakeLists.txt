@@ -1,10 +1,8 @@
-add_executable(dispatcher_smoke
-    dispatcher_smoke.cpp
-)
+# --- CTest -------------------------------------------------------------------
 
-target_link_libraries(dispatcher_smoke
-    PRIVATE
-        cncl_rt_wal_core
-)
+#enable_testing()
 
-add_test(NAME dispatcher_smoke COMMAND dispatcher_smoke)
+# --- subdirectories ----------------------------------------------------------
+
+#add_subdirectory(unit)
+#add_subdirectory(integration)

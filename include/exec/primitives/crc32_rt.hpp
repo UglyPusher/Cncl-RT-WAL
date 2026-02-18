@@ -6,8 +6,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
+#include "stam/stam.hpp"
 
-namespace wal {
+namespace stam::exec::primitives {
 
 // CRC32C (Castagnoli) reflected polynomial.
 static constexpr uint32_t kCrc32cPolyReflected = 0x82F63B78u;
@@ -103,4 +104,4 @@ static_assert(
     "CRC32C table or algorithm mismatch — check polynomial and reflection"
 );
 
-} // namespace wal
+} // namespace stam::exec::primitives

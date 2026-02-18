@@ -2,22 +2,20 @@
 #include <atomic>
 #include <concepts>
 #include <cstdint>
+#include "model/tags.hpp"
+#include "stam/stam.hpp"
 
-namespace tasks {
 
-template <typename Payload>
+namespace stam::exec::tasks {
+
+template <stam::model::Steppable Payload>
 class TaskWrapper {
 public:
     explicit TaskWrapper(Payload& payload, std::atomic<uint32_t>& hb) noexcept
         : payload_(payload), hb_(hb)
     {
-        static_assert(
-            requires(Payload& p, uint32_t t) {
-                { p.step(t) } noexcept -> std::same_as<void>;
-            },
-            "Payload must implement noexcept void step(uint32_t)"
-        );
-            }
+        
+    }
 
     TaskWrapper(const TaskWrapper&) = delete;
     TaskWrapper& operator=(const TaskWrapper&) = delete;
@@ -44,4 +42,4 @@ private:
     std::atomic<uint32_t>& hb_;
 };
 
-} // namespace tasks
+} // namespace stam::exec::tasks

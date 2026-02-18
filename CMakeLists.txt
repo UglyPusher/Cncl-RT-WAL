@@ -1,38 +1,52 @@
-cmake_minimum_required(VERSION 3.22)
+cmake_minimum_required(VERSION 3.20)
 
-project(cncl_rt_wal
-    VERSION 0.1.0
-    LANGUAGES CXX
-)
+project(CnclRTWAL LANGUAGES CXX)
 
-# ------------------------------------------------------------------
-# Global configuration
-# ------------------------------------------------------------------
-
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-if (NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
+# ---- Options ---------------------------------------------------------------
+
+option(BUILD_RTR        "Build real-time runtime layer" ON)
+option(BUILD_MODULES    "Build optional modules" ON)
+option(BUILD_APPS       "Build example applications" ON)
+option(BUILD_TESTS      "Build tests" ON)
+
+# ---- Include root ----------------------------------------------------------
+
+add_library(core_sys INTERFACE)
+target_include_directories(core_sys INTERFACE include)
+
+add_library(core_model INTERFACE)
+target_link_libraries(core_model INTERFACE core_sys)
+
+add_library(core_exec INTERFACE)
+target_link_libraries(core_exec INTERFACE core_model)
+
+# ---- RTR -------------------------------------------------------------------
+
+if(BUILD_RTR)
+    add_subdirectory(src/rtr)
 endif()
 
-# ------------------------------------------------------------------
-# Options
-# ------------------------------------------------------------------
+# ---- Optional modules ------------------------------------------------------
 
-option(CNCL_RT_WAL_BUILD_TESTS "Build unit tests" OFF)
-option(CNCL_RT_WAL_BUILD_FILE_BACKEND "Build file backend" ON)
+if(BUILD_MODULES)
+    add_subdirectory(modules)
+endif()
 
-# ------------------------------------------------------------------
-# Subdirectories
-# ------------------------------------------------------------------
+# ---- Apps ------------------------------------------------------------------
 
-add_subdirectory(src)
+if(BUILD_APPS)
+    add_subdirectory(apps)
+endif()
 
-if (CNCL_RT_WAL_BUILD_TESTS)
+# ---- Tests -----------------------------------------------------------------
+
+if(BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()

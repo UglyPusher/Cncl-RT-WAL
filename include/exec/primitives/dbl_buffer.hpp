@@ -1,11 +1,12 @@
 #pragma once
 
+#include "stam/stam.hpp"
 #include <atomic>
 #include <cstdint>
 #include <type_traits>
 #include "sys/sys_align.hpp"   // SYS_CACHELINE_BYTES, SYS_CACHELINE_ALIGN
 
-namespace rt {
+namespace stam::exec::primitives {
 
 /*
  * DoubleBuffer — ping-pong snapshot buffer (last-writer-wins).
@@ -197,4 +198,4 @@ private:
     DoubleBufferCore<T> core_{};
 };
 
-} // namespace rt
+} // namespace stam::exec::primitives

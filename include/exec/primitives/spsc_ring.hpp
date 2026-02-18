@@ -4,7 +4,7 @@
 #include <type_traits>
 #include "sys/sys_align.hpp"
 
-namespace libs {
+namespace stam::exec::primitives {
 
 // Single-Producer Single-Consumer lock-free ring buffer
 // Preallocated, fixed capacity, no runtime allocation
@@ -70,4 +70,4 @@ private:
   alignas(SYS_CACHELINE_BYTES) T buffer_[Capacity];
 };
 
-} // namespace libs
+} // namespace stam::exec::primitives
