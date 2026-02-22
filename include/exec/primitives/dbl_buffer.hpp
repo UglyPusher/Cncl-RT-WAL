@@ -39,7 +39,9 @@ namespace stam::exec::primitives {
 // Core (shared state carrier)
 // ============================================================================
 
-// Forward declarations for friend access in DoubleBufferCore.template <typename T> class DoubleBufferWriter;
+// Forward declarations for friend access in DoubleBufferCore.
+
+template <typename T> class DoubleBufferWriter;
 template <typename T> class DoubleBufferReader;
 
 template <typename T>

@@ -1,8 +1,5 @@
-# --- CTest -------------------------------------------------------------------
+enable_testing()
 
-#enable_testing()
-
-# --- subdirectories ----------------------------------------------------------
-
-#add_subdirectory(unit)
-#add_subdirectory(integration)
+add_subdirectory(unit)
+add_subdirectory(integration)
+add_subdirectory(primitives)
