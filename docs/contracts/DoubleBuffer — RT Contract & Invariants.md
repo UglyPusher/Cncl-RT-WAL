@@ -23,13 +23,14 @@ Designed for:
 `DoubleBuffer` implements a **last-writer-wins snapshot** model:
 
 - The producer publishes a complete new state atomically.
-- The consumer always sees the last fully published state.
+- The consumer sees the last published state, provided the system ensures `read()` and `write()` do not overlap in time (see Section 4.1).
 - All intermediate states may be lost.
 
 Formally:
 
 ```
-state(t_consumer) = last state published before read()
+state(t_consumer) = last state published before read(),
+                    assuming no overlap of read() and write()
 ```
 
 ---
@@ -70,7 +71,7 @@ The size of `T` is fixed and known at compile time.
 
 **Atomic publication** — publishing a new state is a single `atomic store(release)`.
 
-**No partial visibility** — the consumer never observes a partially written `T`.
+**No partial visibility** — the consumer never observes a partially written `T`, provided `read()` and `write()` do not overlap in time (see Section 4.1). If overlap occurs, the slot ownership invariant may be violated and a torn read of `T` is possible.
 
 ---
 
@@ -82,6 +83,23 @@ The size of `T` is fixed and known at compile time.
 - The consumer is **not re-entrant**.
 
 Violating these preconditions results in **undefined behavior**.
+
+### 4.1 Preemption / SMP Safety
+
+This component does **not** guarantee torn-free snapshots in general SMP or preemptive systems.
+
+**Mechanism of failure.** The consumer executes `read()` in two steps: (1) load `published` index, (2) copy `buffers[idx]`. If the consumer is preempted between these two steps and the producer completes **two** `write()` calls during that window, the producer recycles the slot the consumer is about to copy — slot ownership is violated and the consumer observes a torn `T`.
+
+This scenario requires no SMP: it reproduces on a single CPU under a preemptive scheduler.
+
+**No-torn guarantee holds when** `read()` and `write()` are guaranteed not to overlap in time across their full execution, including the copy of `T`. Sufficient conditions (any one of):
+
+- Scheduling policy ensures the consumer is never preempted for longer than one write period.
+- Application-level rate contract: producer fires at most once per consumer activation.
+- Consumer runs in a non-preemptible region (e.g., IRQ context with masking).
+- Explicit IRQ masking around `read()`.
+
+**The caller is responsible** for establishing one of the above conditions. The component provides no runtime enforcement.
 
 ---
 
@@ -151,7 +169,17 @@ The consumer has no effect on the producer.
 
 ---
 
-## 9. Error Model
+## 9. Initial State
+
+Before the first `write()`, `read()` returns zero-initialized `T` (consequence of value-initialization of `DoubleBufferCore`).
+
+This has **defined behavior** at the C++ level but **unspecified semantics** at the application level: the caller cannot distinguish "no data published yet" from "a valid snapshot with all-zero value."
+
+If detection of the initial unpublished state is required, add an explicit flag or version counter on top.
+
+---
+
+## 10. Error Model
 
 The component has no runtime errors:
 
@@ -163,7 +191,7 @@ The component has no runtime errors:
 
 ---
 
-## 10. Misuse Scenarios (Forbidden)
+## 11. Misuse Scenarios (Forbidden)
 
 The following are forbidden and result in undefined behavior:
 
@@ -173,16 +201,18 @@ The following are forbidden and result in undefined behavior:
 - Using `volatile` instead of atomics.
 - Using `DoubleBuffer` as a queue or log.
 - Attempting to detect skipped updates without an additional sequence mechanism.
+- Calling `read()` from a context where preemption by the producer is possible and the rate contract (Section 4.1) is not established.
 
 ---
 
-## 11. When to Use DoubleBuffer
+## 12. When to Use DoubleBuffer
 
 Use only when:
 
 - Data represents **state**, not events.
 - Minimal latency is a priority.
 - Loss of intermediate updates is acceptable.
+- The system guarantees non-overlapping `read()` / `write()` execution (see Section 4.1).
 - The RT path must be as short as possible.
 
 **Typical applications:**
@@ -194,7 +224,7 @@ Use only when:
 
 ---
 
-## 12. Relation to SPSCRing
+## 13. Relation to SPSCRing
 
 | Property | DoubleBuffer | SPSCRing |
 |---|---|---|
@@ -206,8 +236,8 @@ Use only when:
 
 ---
 
-## 13. Summary
+## 14. Summary
 
-`DoubleBuffer<T>` is a minimal RT primitive for state transfer with a strict, formally verifiable contract — no compromises on latency or determinism.
+`DoubleBuffer<T>` is a minimal RT primitive for state transfer. It provides wait-free publication and bounded-time reads, but **does not internally enforce torn-free snapshots** under preemption or SMP. Integrity of reads depends on a system-level guarantee that `read()` and `write()` do not overlap in time (Section 4.1).
 
 It is not a queue and is not intended for logging.

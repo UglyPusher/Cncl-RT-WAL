@@ -18,6 +18,18 @@ namespace stam::exec::primitives {
  *  - consumer is NOT re-entrant
  *  - T is trivially copyable (bounded, deterministic copy; no ctor/dtor)
  *
+ * SAFETY NOTE (preemption / SMP):
+ *  - This component does NOT guarantee torn-free snapshots in general
+ *    SMP or preemptive systems.
+ *  - No-torn-read is guaranteed only if read() and write() do not overlap
+ *    in time (including the entire copy of T). Overlap is possible even on
+ *    a single CPU: if the consumer is preempted after loading `published`
+ *    but before copying buffers[idx], and the producer completes two writes
+ *    during that window, the slot the consumer is about to read is recycled.
+ *  - The caller is responsible for ensuring non-overlap via scheduling
+ *    policy, application-level rate contract, IRQ masking, or a
+ *    non-preemptible region. See contract doc §4.1 for sufficient conditions.
+ *
  * SEMANTICS:
  *  - Snapshot / frame primitive, NOT a queue/log.
  *  - Intermediate updates may be lost.
@@ -31,26 +43,24 @@ namespace stam::exec::primitives {
  *    with respect to the intended semantics of this component.
  */
 
-#ifndef RT_CACHELINE_BYTES
-#define RT_CACHELINE_BYTES 64
-#endif
+// Forward declarations for friend access in DoubleBufferCore.
+template <typename T> class DoubleBufferWriter;
+template <typename T> class DoubleBufferReader;
 
 // ============================================================================
 // Core (shared state carrier)
 // ============================================================================
 
-// Forward declarations for friend access in DoubleBufferCore.
-
-template <typename T> class DoubleBufferWriter;
-template <typename T> class DoubleBufferReader;
-
 template <typename T>
 struct DoubleBufferCore final {
     static_assert(std::is_trivially_copyable_v<T>,
-                  "DoubleBuffer requires trivially copyable T");
+        "DoubleBuffer requires trivially copyable T");
 
     static_assert(SYS_CACHELINE_BYTES > 0,
-                  "SYS_CACHELINE_BYTES must be defined by portability layer");
+        "SYS_CACHELINE_BYTES must be defined by portability layer");
+
+    static_assert(std::atomic<uint32_t>::is_always_lock_free,
+        "DoubleBuffer requires lock-free std::atomic<uint32_t> for deterministic RT behavior.");
 
     // NOTE (review item #7 - public fields + friends):
     // Core is intentionally a trivial POD-like carrier of shared state.
@@ -63,11 +73,11 @@ struct DoubleBufferCore final {
     friend class DoubleBufferWriter<T>;
     friend class DoubleBufferReader<T>;
 
-    struct Slot final {
+    struct SYS_CACHELINE_ALIGN Slot final {
         // Fix for review item #1 (false sharing):
         // Each slot occupies its own cache line to avoid producer/consumer
         // ping-pong when sizeof(T) < cache line size.
-        SYS_CACHELINE_ALIGN T value;
+        T value;
     };
 
     Slot buffers[2];
