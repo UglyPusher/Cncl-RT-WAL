@@ -3,8 +3,10 @@
 #include "stam/stam.hpp"
 #include <atomic>
 #include <cstdint>
+#include <cstddef>
 #include <type_traits>
-#include "sys/sys_align.hpp"   // SYS_CACHELINE_BYTES, SYS_CACHELINE_ALIGN
+#include "sys/sys_align.hpp"       // SYS_CACHELINE_BYTES
+#include "sys/sys_preemption.hpp"  // sys_preemption_disable(), sys_preemption_enable()
 
 namespace stam::exec::primitives {
 
@@ -29,14 +31,27 @@ namespace stam::exec::primitives {
  *  - lock_state == UNLOCKED regardless of return value.
  *
  * RT APPLICABILITY:
- *  - publish(): wait-free, O(1), bounded atomic ops, no loops/CAS/mutex
- *  - try_read(): wait-free, O(1), bounded atomic ops + copy(T)
+ *  - publish(): wait-free, O(1). Preemption disabled only for slot
+ *    selection + invalidate (atomic ops only, independent of sizeof(T)).
+ *  - try_read(): wait-free, O(1). Preemption disabled only for
+ *    claim-verify (3 atomic ops, independent of sizeof(T)).
+ *  - copy(T) is outside both critical sections.
+ *
+ * PREEMPTION SAFETY (uniprocessor):
+ *  - Both publish() and try_read() use sys_preemption_disable/enable to
+ *    protect their respective atomic windows. WCET of each critical
+ *    section is independent of sizeof(T).
+ *  - On SMP: preemption disable is insufficient; torn reads are possible.
+ *    See Known Limitations in spec (Revision 1.4).
  *
  * MISUSE:
- *  - Violations of the above contract result in undefined behavior
- *    with respect to the intended semantics of this component.
+ *  - Violations of the above contract result in undefined behavior.
+ *  - Mailbox2Slot::writer() / reader() may be called multiple times, each
+ *    returning a new handle to the same Core. Creating more than one Writer
+ *    or more than one Reader for the same Core violates the 1P/1C contract.
+ *    No runtime guard is provided to keep the RT path minimal.
  *
- * SPEC: docs/contracts/Mailbox2Slot.md (Revision 1.3)
+ * SPEC: docs/contracts/Mailbox2Slot.md (Revision 1.4)
  */
 
 // ============================================================================
@@ -49,6 +64,25 @@ inline constexpr uint8_t kSlot0    = 0u;
 inline constexpr uint8_t kSlot1    = 1u;
 inline constexpr uint8_t kNone     = 2u;   // pub_state: nothing published
 inline constexpr uint8_t kUnlocked = 2u;   // lock_state: reader holds no slot
+
+// ============================================================================
+// CachelinePadded — wraps an atomic in a full cacheline to eliminate
+// false sharing. Padding is verified at compile time.
+// ============================================================================
+
+template <typename A>
+struct alignas(SYS_CACHELINE_BYTES) CachelinePadded final {
+    static_assert(sizeof(A) <= SYS_CACHELINE_BYTES,
+                  "CachelinePadded: atomic wider than cacheline");
+
+    A value;
+
+private:
+    std::byte pad_[SYS_CACHELINE_BYTES - sizeof(A)];
+};
+
+static_assert(sizeof(CachelinePadded<std::atomic<uint8_t>>) == SYS_CACHELINE_BYTES,
+              "CachelinePadded must be exactly one cacheline");
 
 // ============================================================================
 // Forward declarations
@@ -76,32 +110,40 @@ struct Mailbox2SlotCore final {
     friend class Mailbox2SlotWriter<T>;
     friend class Mailbox2SlotReader<T>;
 
-    struct Slot final {
-        // Each slot on its own cache line to avoid false sharing between
-        // writer filling one slot and reader copying from the other.
-        SYS_CACHELINE_ALIGN T value;
+    // Each slot occupies an integer number of cachelines to prevent
+    // false sharing between writer filling one slot and reader copying
+    // from the other, and between slots[1] tail and pub_state.
+    struct alignas(SYS_CACHELINE_BYTES) Slot final {
+        T value;
     };
+    static_assert(sizeof(Slot) % SYS_CACHELINE_BYTES == 0,
+                  "Slot must occupy an integer number of cachelines; "
+                  "consider padding T or using a wrapper");
 
     Slot slots[2];
 
     // pub_state: which slot is currently published (or NONE).
-    // Written only by writer (release), read by both sides (acquire).
-    //
-    // Placed on its own cache line: writer modifies pub_state on every
-    // publish(); reader loads it on every try_read(). Separating from
-    // lock_state avoids writer↔reader false sharing on the control word.
-    SYS_CACHELINE_ALIGN std::atomic<uint8_t> pub_state{kNone};
+    // Single-writer (only writer stores); read by both sides (acquire).
+    // Padded to a full cacheline: writer modifies on every publish(),
+    // reader loads on every try_read(); separating from lock_state
+    // eliminates writer↔reader false sharing on the control word.
+    CachelinePadded<std::atomic<uint8_t>> pub_state{};   // .value = kNone
 
     // lock_state: which slot the reader currently holds (or UNLOCKED).
-    // Written only by reader (release), read by writer (acquire).
-    //
-    // Separated from pub_state: writer reads lock_state once per publish()
-    // to select a slot; reader writes it twice per try_read(). Keeping them
-    // on distinct cache lines prevents unnecessary invalidations.
-    SYS_CACHELINE_ALIGN std::atomic<uint8_t> lock_state{kUnlocked};
+    // Single-writer (only reader stores); read by writer (acquire).
+    // Padded to a full cacheline: writer reads once per publish(),
+    // reader writes twice per try_read(); separate line prevents
+    // unnecessary cache invalidations on the peer core.
+    CachelinePadded<std::atomic<uint8_t>> lock_state{};  // .value = kUnlocked
 
     static_assert(std::atomic<uint8_t>::is_always_lock_free,
                   "std::atomic<uint8_t> must be lock-free on this platform");
+
+    // Verify overall layout: no field bleeds into a neighbour's cacheline.
+    static_assert(sizeof(Mailbox2SlotCore) ==
+                      2 * sizeof(Slot) +
+                      sizeof(CachelinePadded<std::atomic<uint8_t>>) * 2,
+                  "Mailbox2SlotCore layout unexpected; check padding");
 };
 
 // ============================================================================
@@ -123,30 +165,48 @@ public:
 
     // Publish a new snapshot (wait-free, bounded).
     //
-    // Slot selection (I3, Lemma: Safe Slot Availability):
-    //   Read lock_state once with acquire. By the SPSC contract the reader
-    //   holds at most one slot at a time, so the other slot is always free.
-    //   acquire ensures happens-before with reader's release-store of
-    //   lock_state, which is the foundation of the ABA proof (see spec I6).
+    // Critical section (preemption disabled):
+    //   Covers slot selection and conditional invalidate only.
+    //   Does NOT include copy(T); WCET is independent of sizeof(T).
     //
-    // Invalidate path (I5):
-    //   If the chosen slot j is already published, we must invalidate
-    //   pub_state before writing to prevent reader from starting a claim
-    //   on a slot being overwritten. No race with reader here: we selected
-    //   j != lock_state, so reader cannot claim j at this point.
+    //   Step 1 — choose slot j != lock_state:
+    //     load(acquire) establishes happens-before with reader's
+    //     lock_state.store(release); writer sees the slot currently
+    //     held by reader (I3).
+    //
+    //   Step 2 — conditional invalidate (I5):
+    //     If pub_state == j, store NONE before writing data.
+    //     load(relaxed): writer is the single-writer of pub_state;
+    //     this is read-my-own-write; no additional ordering needed.
+    //     No race with reader: pub_state == j implies lock_state != j
+    //     (writer would have chosen the other slot), so reader cannot
+    //     start a claim on j at this point.
+    //
+    //   Invariant on preemption_enable():
+    //     pub_state != j  OR  pub_state == NONE.
+    //     Any reader arriving after this point cannot claim slot j;
+    //     copy(T) is therefore safe without preemption guard.
+    //
+    // Outside critical section:
+    //   Step 3 — write data into S[j], then publish j.
+    //   ABA safety: see I6 in spec.
     void publish(const T& value) noexcept {
-        // Step 1: choose slot j != lock_state.
-        const uint8_t locked = core_.lock_state.load(std::memory_order_acquire);
+        // --- critical section: slot selection + invalidate ---
+        sys_preemption_disable();
+
+        const uint8_t locked = core_.lock_state.value.load(std::memory_order_acquire);
         const uint8_t j      = (locked == kSlot1) ? kSlot0 : kSlot1;
 
-        // Step 2: invalidate if j is currently published (I5).
-        if (core_.pub_state.load(std::memory_order_acquire) == j) {
-            core_.pub_state.store(kNone, std::memory_order_release);
+        if (core_.pub_state.value.load(std::memory_order_relaxed) == j) {
+            core_.pub_state.value.store(kNone, std::memory_order_release);
         }
 
-        // Step 3: write data, then publish.
+        sys_preemption_enable();
+        // --- end critical section ---
+        // Invariant: slot j is unreachable by reader until pub_state.store(j).
+
         core_.slots[j].value = value;
-        core_.pub_state.store(j, std::memory_order_release);
+        core_.pub_state.value.store(j, std::memory_order_release);
     }
 
 private:
@@ -178,6 +238,12 @@ public:
     //
     // POSTCONDITION: lock_state == UNLOCKED regardless of return value.
     //
+    // Critical section (preemption disabled):
+    //   Covers claim-verify only (steps 1–4): 3 atomic ops, independent
+    //   of sizeof(T). Eliminates false returns caused by writer preempting
+    //   reader between p1-load and p2-verify. copy(T) is outside —
+    //   symmetric with writer's design.
+    //
     // Claim-verify protocol (I6):
     //   p1 = load pub_state (acquire)
     //   lock slot p1         (release) ← visible to writer's acquire-load
@@ -185,30 +251,36 @@ public:
     //   if p1 == p2: slot is stable, safe to copy
     //   else:        writer changed pub_state between our loads → abort
     //
-    // ABA safety: if writer wanted to re-publish slot p1, it must write
-    // to S[p1]. But our lock_state.store(p1, release) + writer's
-    // lock_state.load(acquire) establishes happens-before, so writer sees
+    // ABA safety: lock_state.store(p1, release) + writer's
+    // lock_state.load(acquire) establishes happens-before; writer sees
     // lock_state == p1 and is forbidden from writing to S[p1] by I3.
     [[nodiscard]] bool try_read(T& out) noexcept {
+        // --- critical section: claim-verify ---
+        sys_preemption_disable();
+
         // Step 1: load published slot index.
-        const uint8_t p1 = core_.pub_state.load(std::memory_order_acquire);
+        const uint8_t p1 = core_.pub_state.value.load(std::memory_order_acquire);
 
         // Step 2: nothing published yet (or between publications).
         // lock_state is already UNLOCKED by postcondition of previous call.
         if (p1 == kNone) {
+            sys_preemption_enable();
             return false;
         }
 
         // Step 3: claim slot p1.
-        core_.lock_state.store(p1, std::memory_order_release);
+        core_.lock_state.value.store(p1, std::memory_order_release);
 
         // Step 4: verify publication has not changed since step 1.
-        const uint8_t p2 = core_.pub_state.load(std::memory_order_acquire);
+        const uint8_t p2 = core_.pub_state.value.load(std::memory_order_acquire);
+
+        sys_preemption_enable();
+        // --- end critical section ---
 
         if (p2 != p1) {
-            // Writer published something new between steps 1 and 4.
+            // Writer changed pub_state between steps 1 and 4.
             // Release the claim and signal miss.
-            core_.lock_state.store(kUnlocked, std::memory_order_release);
+            core_.lock_state.value.store(kUnlocked, std::memory_order_release);
             return false;
         }
 
@@ -216,7 +288,7 @@ public:
         out = core_.slots[p1].value;
 
         // Step 6: release claim. Postcondition: lock_state == UNLOCKED.
-        core_.lock_state.store(kUnlocked, std::memory_order_release);
+        core_.lock_state.value.store(kUnlocked, std::memory_order_release);
         return true;
     }
 
@@ -236,9 +308,11 @@ public:
     Mailbox2Slot(const Mailbox2Slot&)            = delete;
     Mailbox2Slot& operator=(const Mailbox2Slot&) = delete;
 
-    // NOTE: Creating more than one Writer or Reader for the same mailbox
-    // violates the 1P/1C contract and is semantically undefined.
-    // Runtime guards are intentionally omitted to keep the RT path minimal.
+    // NOTE: writer() and reader() each return a new handle to the shared Core.
+    // Calling writer() more than once yields two Writer objects for the same
+    // Core — this violates the 1P/1C contract and results in undefined
+    // behavior. The same applies to reader(). No runtime guard is provided;
+    // enforcement is the caller's responsibility.
 
     [[nodiscard]] Mailbox2SlotWriter<T> writer() noexcept {
         return Mailbox2SlotWriter<T>(core_);
