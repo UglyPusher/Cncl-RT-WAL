@@ -14,7 +14,8 @@
 * с **ограниченной ёмкостью = Capacity − 1**
 * с возможной **потерей данных при переполнении** (`push()` возвращает `false`)
 
-Очередь **не гарантирует доставку**.
+Очередь гарантирует FIFO-доставку всех **успешно записанных элементов**.
+Потери возможны только при push()==false.
 
 ---
 
@@ -169,9 +170,9 @@ push() is wait-free for the producer under the single-producer precondition.
 ## 6. Non-RT contract (consumer side)
 
 `pop()`:
-
-* bounded
-* lock-free
+* wait-free try-pop O(1)
+* операция всегда завершается за фиксированное число шагов;
+* успешность зависит от наличия данных.
 * может использоваться в RT, но **не позиционируется** как hard-RT API
   из-за возможной последующей non-RT обработки данных.
 
@@ -302,7 +303,7 @@ pop()
 
 обладает свойством:
 
-> pop() is wait-free in completion: every call finishes in a bounded number of steps without waiting or retry.
+> pop() is wait-free as a try-pop operation: every call finishes in a bounded number of steps and returns either success or empty.
 
 Это означает:
 
@@ -320,12 +321,6 @@ pop()
 
 * **bounded execution time**
 * отсутствие неограниченных циклов ожидания
-
-Однако `pop()` не классифицируется как wait-free, поскольку:
-
-* успешное извлечение элемента
-  зависит от действий producer
-  (наличия опубликованных данных).
 
 ---
 
