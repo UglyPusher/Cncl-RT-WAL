@@ -4,9 +4,9 @@
 #include <atomic>
 #include <cstdint>
 #include <type_traits>
-#include "sys/sys_align.hpp"   // SYS_CACHELINE_BYTES, SYS_CACHELINE_ALIGN
+#include "stam/sys/sys_align.hpp"   // SYS_CACHELINE_BYTES, SYS_CACHELINE_ALIGN
 
-namespace stam::exec::primitives {
+namespace stam::primitives {
 
 /*
  * DoubleBuffer — ping-pong snapshot buffer (last-writer-wins).

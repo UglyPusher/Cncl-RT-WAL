@@ -26,6 +26,8 @@ target_link_libraries(core_model INTERFACE core_sys)
 add_library(core_exec INTERFACE)
 target_link_libraries(core_exec INTERFACE core_model)
 
+add_subdirectory(primitives)
+target_link_libraries(stam_primitives INTERFACE stam_primitives)
 # ---- RTR -------------------------------------------------------------------
 
 if(BUILD_RTR)

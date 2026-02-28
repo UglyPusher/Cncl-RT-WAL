@@ -4,9 +4,9 @@
 #include <atomic>
 #include <cstddef>
 #include <type_traits>
-#include "sys/sys_align.hpp"   // SYS_CACHELINE_BYTES, SYS_CACHELINE_ALIGN
+#include "stam/sys/sys_align.hpp"   // SYS_CACHELINE_BYTES, SYS_CACHELINE_ALIGN
 
-namespace stam::exec::primitives {
+namespace stam::primitives {
 
 /*
  * SPSCRing — Single-Producer Single-Consumer lock-free ring buffer.

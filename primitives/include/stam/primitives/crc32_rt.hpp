@@ -8,7 +8,7 @@
 #include <string_view>
 #include "stam/stam.hpp"
 
-namespace stam::exec::primitives {
+namespace stam::primitives {
 
 // CRC32C (Castagnoli) reflected polynomial.
 static constexpr uint32_t kCrc32cPolyReflected = 0x82F63B78u;
