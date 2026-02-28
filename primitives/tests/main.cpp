@@ -4,6 +4,7 @@ void crc32_tests();
 void dbl_buffer_tests();
 void mailbox2slot_tests();
 void spsc_ring_tests();
+int  spmc_snapshot_tests();
 
 int main()
 {
@@ -13,6 +14,7 @@ int main()
     dbl_buffer_tests();
     mailbox2slot_tests();
     spsc_ring_tests();
+    spmc_snapshot_tests();
 
     printf("=== ALL TESTS PASSED ===\n");
 

@@ -13,6 +13,7 @@ add_executable(stam_tests
     dbl_buffer_test.cpp
     mailbox2slot_test.cpp
     spsc_ring_test.cpp
+    spmc_snapshot_test.cpp
     main.cpp
 )
 
