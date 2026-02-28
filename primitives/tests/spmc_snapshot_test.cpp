@@ -240,7 +240,7 @@ TEST(test_busy_mask_zero_after_all_reads) {
     Pod32 out{};
     for (int t = 0; t < 4; ++t) {
         auto reader = ch.reader();
-        reader.try_read(out);
+        (void)reader.try_read(out);
     }
     EXPECT(ch.core().ctrl.busy_mask.load() == 0u);
 }
@@ -254,8 +254,8 @@ TEST(test_refcnt_zero_after_reads) {
     writer.publish({5, 6});
 
     Pod32 out{};
-    r1.try_read(out);
-    r2.try_read(out);
+    (void)r1.try_read(out);
+    (void)r2.try_read(out);
 
     for (uint32_t i = 0; i < SPMCSnapshotCore<Pod32, 2>::K; ++i) {
         EXPECT(ch.core().refcnt[i].load() == 0u);
@@ -438,13 +438,13 @@ TEST(test_spmc_n2_sustained_cleanup) {
     std::thread r1([&] {
         auto reader = ch.reader();
         Pod32 out{};
-        while (!stop.load(std::memory_order_relaxed)) reader.try_read(out);
+        while (!stop.load(std::memory_order_relaxed)) (void)reader.try_read(out);
     });
 
     std::thread r2([&] {
         auto reader = ch.reader();
         Pod32 out{};
-        while (!stop.load(std::memory_order_relaxed)) reader.try_read(out);
+        while (!stop.load(std::memory_order_relaxed)) (void)reader.try_read(out);
     });
 
     std::this_thread::sleep_for(kDuration);
