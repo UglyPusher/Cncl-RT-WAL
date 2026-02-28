@@ -1,8 +1,10 @@
 #pragma once
+// sys_fence.hpp
+// Memory fence / barrier utilities: compiler, C++ atomic, and CPU-level.
 #include <atomic>
 #include "sys/sys_compiler.hpp"
 #include "sys/sys_arch.hpp"
-#include "sys/sys_config.hpp"  // для SYS_ASSUME_SINGLE_CORE
+#include "sys/sys_config.hpp"  // for SYS_ASSUME_SINGLE_CORE
 
 // 1) Compiler fence
 SYS_FORCEINLINE void sys_fence_compiler() noexcept {
@@ -29,7 +31,7 @@ SYS_FORCEINLINE void sys_fence_seq_cst() noexcept {
 // 3) CPU fence (hardware barrier)
 SYS_FORCEINLINE void sys_cpu_fence_full() noexcept {
 #if SYS_ARCH_ARM && SYS_ASSUME_SINGLE_CORE
-  // Single-core Cortex-M: DMB для MMIO
+  // Single-core Cortex-M: DMB for MMIO ordering (no inter-core sync needed)
   asm volatile("dmb" ::: "memory");
 #elif SYS_ARCH_ARM
   // Multi-core ARM: system-wide barrier

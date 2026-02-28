@@ -1,4 +1,6 @@
 #pragma once
+// sys_rt.hpp
+// RT-context detection, RT-safe assert, and code-section annotation.
 #include <cstdint>
 #include "sys/sys_compiler.hpp"
 

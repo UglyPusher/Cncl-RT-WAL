@@ -220,4 +220,4 @@ private:
     SPSCRingCore<T, Capacity> core_{};
 };
 
-} // namespace stam::exec::primitives
+} // namespace stam::primitives

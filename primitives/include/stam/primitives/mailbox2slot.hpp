@@ -139,11 +139,9 @@ struct Mailbox2SlotCore final {
     static_assert(std::atomic<uint8_t>::is_always_lock_free,
                   "std::atomic<uint8_t> must be lock-free on this platform");
 
-    // Verify overall layout: no field bleeds into a neighbour's cacheline.
-    //static_assert(sizeof(Mailbox2SlotCore) ==
-    //                  2 * sizeof(Slot) +
-    //                  sizeof(CachelinePadded<std::atomic<uint8_t>>) * 2,
-    //              "Mailbox2SlotCore layout unexpected; check padding");
+    // Layout is verified in Mailbox2SlotWriter constructor via static_assert.
+    // sizeof(Mailbox2SlotCore<T>) cannot be used here: the type is incomplete
+    // inside its own body. The check is deferred to first instantiation.
 };
 // ============================================================================
 // Producer view
@@ -153,7 +151,14 @@ template <typename T>
 class Mailbox2SlotWriter final {
 public:
     explicit Mailbox2SlotWriter(Mailbox2SlotCore<T>& core) noexcept
-        : core_(core) {}
+        : core_(core) {
+        // Verify Core layout at instantiation time (type is complete here).
+        // Each field must occupy its own cacheline(s): no false sharing.
+        static_assert(sizeof(Mailbox2SlotCore<T>) ==
+                          2 * sizeof(typename Mailbox2SlotCore<T>::Slot) +
+                          2 * sizeof(CachelinePadded<std::atomic<uint8_t>>),
+                      "Mailbox2SlotCore layout unexpected; check padding");
+    }
 
     Mailbox2SlotWriter(const Mailbox2SlotWriter&)            = delete;
     Mailbox2SlotWriter& operator=(const Mailbox2SlotWriter&) = delete;
@@ -328,4 +333,4 @@ private:
     Mailbox2SlotCore<T> core_{};
 };
 
-} // namespace stam::exec::primitives
+} // namespace stam::primitives

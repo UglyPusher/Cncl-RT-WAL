@@ -1,4 +1,6 @@
 #pragma once
+// sys_compiler.hpp
+// Compiler detection, inlining attributes, branch hints, and compiler barrier.
 
 // Conditional include for MSVC intrinsics
 #if defined(_MSC_VER)
@@ -41,7 +43,8 @@
   #define SYS_UNLIKELY(x) (x)
 #endif
 
-// Compiler barrier: запретить компилятору переупорядочивать через этот пункт
+// Compiler barrier: prevents the compiler from reordering memory accesses across this point.
+// Does not emit any CPU instruction; use sys_cpu_fence_full() for hardware ordering.
 SYS_FORCEINLINE void sys_compiler_barrier() noexcept {
 #if SYS_COMPILER_MSVC
   _ReadWriteBarrier();

@@ -1,30 +1,33 @@
 #pragma once
+// sys_config.hpp
+// Top-level configuration: user overrides, library defaults, and platform header pull-in.
+// Include this file (directly or via stam.hpp) to configure the portability layer.
 
-// 1) Пользовательский override (опционально).
-// Подключится, если пользователь добавил файл в include-path.
+// 1) Optional user override.
+// Included automatically if the user places the file on the include path.
 #if defined(__has_include)
   #if __has_include("user_sys_config.hpp")
     #include "user_sys_config.hpp"
   #endif
 #endif
 
-// 2) Внутренние дефолты (если пользователь не определил).
+// 2) Library defaults (applied only if the user has not defined them).
 #ifndef SYS_ENABLE_RT
   #define SYS_ENABLE_RT 1
 #endif
 
 #ifndef SYS_ASSUME_SINGLE_CORE
-  // Для Cortex-M часто true, для SMP — false.
+  // Typically true for Cortex-M single-core targets; false for SMP.
   #define SYS_ASSUME_SINGLE_CORE 0
 #endif
 
 #ifndef SYS_CACHELINE_BYTES
-  // "Безопасный" дефолт для десктопа; на Cortex-M можно поставить 32 или 0 (если cache нет).
+  // Safe default for desktop targets; set to 32 or 0 on Cortex-M (no data cache).
   #define SYS_CACHELINE_BYTES 64
 #endif
 
 #ifndef SYS_RB_ALIGNMENT
-  // Выравнивание структур ринга: обычно cacheline.
+  // Ring-buffer structure alignment; typically equals the cacheline size.
   #define SYS_RB_ALIGNMENT SYS_CACHELINE_BYTES
 #endif
 
@@ -33,11 +36,11 @@
 #endif
 
 #ifndef SYS_STRICT_RT
-  // 1 = более жёсткие проверки/запреты (assert/annotations)
+  // 1 = enable stricter RT checks and annotations (asserts, attribute markers).
   #define SYS_STRICT_RT 1
 #endif
 
-// 3) Подключаем платформенные детали
+// 3) Pull in the platform-specific headers.
 #include "sys/sys_platform.hpp"
 #include "sys/sys_compiler.hpp"
 #include "sys/sys_arch.hpp"

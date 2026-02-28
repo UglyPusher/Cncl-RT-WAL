@@ -210,4 +210,4 @@ private:
     DoubleBufferCore<T> core_{};
 };
 
-} // namespace stam::exec::primitives
+} // namespace stam::primitives

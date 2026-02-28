@@ -1,4 +1,6 @@
 #pragma once
+// sys_arch.hpp
+// CPU architecture detection macros.
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
   #define SYS_ARCH_X86 1
