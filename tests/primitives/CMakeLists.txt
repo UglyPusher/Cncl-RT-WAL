@@ -19,7 +19,7 @@ function(add_primitive_test)
 
     add_executable(${ARG_NAME} ${ARG_SOURCE})
 
-    target_link_libraries(${ARG_NAME} PRIVATE core_exec)
+    target_link_libraries(${ARG_NAME} PRIVATE stam_primitives)
 
     target_compile_options(${ARG_NAME} PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:

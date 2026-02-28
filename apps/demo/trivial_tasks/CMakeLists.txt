@@ -7,7 +7,7 @@ target_sources(app_trv_task
 
 target_link_libraries(app_trv_task
     PRIVATE
-        core_exec
+        stam_exec
         demo_trivial_tasks
-        core_rtr        # можно выключить опцией BUILD_RTR
+        stam_rtr
 )

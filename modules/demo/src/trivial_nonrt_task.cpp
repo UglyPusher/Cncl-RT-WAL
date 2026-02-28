@@ -5,7 +5,7 @@ namespace stam::modules::demo {
 
 void trivial_nonrt_task::step(uint32_t) noexcept
 {
-    ++dummy_; // имитация работы
+    ++dummy_; // simulate work
 }
 
 } // namespace stam::modules::demo

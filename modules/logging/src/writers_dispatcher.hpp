@@ -6,7 +6,7 @@
 namespace wal {
 
 struct RecordView;   // forward-only, POD-like
-struct SubmitResult; // enum / status, без исключений
+struct SubmitResult; // enum / status, no exceptions
 
 class WritersDispatcher final {
 public:

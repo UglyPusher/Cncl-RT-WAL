@@ -9,5 +9,5 @@ public:
     explicit Writer(Backend&) noexcept;
     bool push(/* raw record */) noexcept;
 };
- 
+
 } // namespace wal::internal

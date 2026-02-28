@@ -14,7 +14,7 @@ public:
     explicit TaskWrapper(Payload& payload, std::atomic<uint32_t>& hb) noexcept
         : payload_(payload), hb_(hb)
     {
-        
+
     }
 
     TaskWrapper(const TaskWrapper&) = delete;

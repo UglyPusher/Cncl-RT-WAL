@@ -7,7 +7,7 @@ target_sources(app_minimal
 
 target_link_libraries(app_minimal
     PRIVATE
-        core_exec
-        core_rtr        # можно выключить опцией BUILD_RTR
-        module_logging  # опционально
+        stam_exec
+        stam_rtr
+        module_logging
 )
