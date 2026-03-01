@@ -1,130 +1,130 @@
 # SPMCSnapshot (SPMC Snapshot Channel)
 
-`docs/contracts/SPMCSnapshot — RT Contract & Invariants.md` · Revision 6.2 — February 2026
+`docs/contracts/SPMCSnapshot — RT Contract & Invariants.md` · Revision 6.2 - February 2026
 
 ---
 
-## Назначение
+## Purpose
 
-Примитив передачи **снапшота состояния** от одного писателя к нескольким читателям.
+A primitive for transferring a **state snapshot** from one writer to multiple readers.
 
-**Семантика: latest-wins.** Промежуточные публикации могут быть потеряны.
+**Semantics: latest-wins.** Intermediate publications may be lost.
 
-### Класс решаемых задач
+### Problem class addressed
 
-Примитив решает задачу **безопасной публикации разделяемого состояния** в условиях:
+The primitive solves **safe shared-state publication** under the following conditions:
 
-* **Ограниченная память** — `(N+2) × sizeof(T)` на данные против `2N × sizeof(T)` для N независимых Mailbox2Slot. При больших `sizeof(T)` и большом N экономия существенна.
-* **SMP-системы** — корректность на многопроцессорных системах с независимыми кэшами (x86/TSO, ARM, POWER). Torn write исключён через happens-before цепочку `store(release)` writer'а → `load(acquire)` reader'а на атомике `published`: все байты `slots[j]` гарантированно видимы reader'у **до** того как `published == j` становится наблюдаемым.
-* **Вытеснение** — корректность сохраняется при вытеснении writer'а или reader'а планировщиком в любой точке алгоритма. Torn write при вытеснении writer'а в середине `slots[j] = value` исключён тем же барьером: `published.store(j, release)` выполняется только после возобновления writer'а и завершения записи.
-* **RT-домен** — wait-free, O(1), bounded WCET для writer'а и всех reader'ов. Нет блокировок, нет динамической памяти, нет системных вызовов.
+* **Bounded memory** - `(N+2) × sizeof(T)` for data versus `2N × sizeof(T)` for N independent Mailbox2Slot instances. For large `sizeof(T)` and large N, savings are significant.
+* **SMP systems** - correctness on multiprocessor systems with independent caches (x86/TSO, ARM, POWER). Torn write is excluded by the happens-before chain `writer store(release)` -> `reader load(acquire)` on atomic `published`: all bytes of `slots[j]` are guaranteed visible to readers **before** `published == j` becomes observable.
+* **Preemption** - correctness is preserved if writer or reader is preempted by the scheduler at any point in the algorithm. Torn write when writer is preempted in the middle of `slots[j] = value` is excluded by the same barrier: `published.store(j, release)` executes only after writer resumes and completes the write.
+* **RT domain** - wait-free, O(1), bounded WCET for writer and all readers. No locks, no dynamic memory, no syscalls.
 
-Torn read исключён **структурно** (инвариант W-NoOverwritePublished) — без verify, без retry, без SeqLock-подобных счётчиков.
+Torn read is excluded **structurally** (W-NoOverwritePublished invariant) - no verify, no retry, no SeqLock-like counters.
 
 ---
 
-## Сравнение с альтернативами
+## Comparison with alternatives
 
 | | N × Mailbox2Slot | SPMCSnapshot | SeqLock |
 |---|---|---|---|
-| Память (данные) | `2N × sizeof(T)` | `(N+2) × sizeof(T)` | `1 × sizeof(T)` |
-| Writer | wait-free, O(N) записей | **wait-free, O(1)** | wait-free, O(1) |
-| Reader | wait-free, O(1) | **wait-free, O(1), без verify** | не wait-free |
-| Torn read | нет | **нет (структурно)** | нет |
-| Состояние NONE | нет | **нет** | нет |
-| "Нет данных" до первой публикации | нет | **явный atomic<bool>** | нет |
-| N фиксировано | да | да | нет |
+| Data memory | `2N × sizeof(T)` | `(N+2) × sizeof(T)` | `1 × sizeof(T)` |
+| Writer | wait-free, O(N) writes | **wait-free, O(1)** | wait-free, O(1) |
+| Reader | wait-free, O(1) | **wait-free, O(1), no verify** | not wait-free |
+| Torn read | no | **no (structural)** | no |
+| NONE state | no | **no** | no |
+| "No data" before first publication | no | **explicit atomic<bool>** | no |
+| N fixed | yes | yes | no |
 
 ---
 
-## Модель
+## Model
 
-### Участники
+### Participants
 
-* **Writer**: ровно один поток/ядро, пишет в слоты, управляет `published` и `initialized`.
-* **Reader[0..N-1]**: N потоков/ядер, читают данные и управляют `refcnt[i]` / `busy_mask`.
+* **Writer**: exactly one thread/core; writes slots, controls `published` and `initialized`.
+* **Reader[0..N-1]**: N threads/cores; read data and control `refcnt[i]` / `busy_mask`.
 
-### Параметры
+### Parameters
 
-* `N` — максимальное число одновременных reader'ов (фиксировано на этапе компиляции)
-* `K = N + 2` — число слотов
+* `N` - maximum number of simultaneous readers (fixed at compile time)
+* `K = N + 2` - number of slots
 
-### Память
+### Memory
 
 ```
-slots[0..K-1]    — слоты данных типа T, каждый на отдельной cache line
-refcnt[0..K-1]   — atomic<uint8_t>, точный счётчик reader'ов читающих slots[i]
-busy_mask        — atomic<uint32_t>, консервативный индикатор занятости для writer'а
-published        — atomic<uint8_t>, индекс текущего опубликованного слота ∈ [0..K-1]
-initialized      — atomic<bool>,   false до первой публикации, true после
+slots[0..K-1]    - data slots of type T, each on a separate cache line
+refcnt[0..K-1]   - atomic<uint8_t>, exact count of readers reading slots[i]
+busy_mask        - atomic<uint32_t>, conservative busy indicator for writer
+published        - atomic<uint8_t>, index of current published slot in [0..K-1]
+initialized      - atomic<bool>, false before first publication, true after
 ```
 
-### Роли атомиков
+### Atomic roles
 
-| Атомик | Кто пишет | Кто читает | Назначение |
+| Atomic | Writers | Readers | Purpose |
 |---|---|---|---|
-| `refcnt[i]` | Reader'а | Reader'а (результат fetch_sub) | Точный счётчик одновременных читателей |
-| `busy_mask` | Reader'а | Writer (acquire) | O(1) консервативный индикатор занятости |
-| `published` | Writer (store) | Reader'а, Writer (acquire) | Индекс актуального снапшота |
-| `initialized` | Writer (store, однократно) | Reader'а (acquire) | Сигнал наличия первой публикации |
+| `refcnt[i]` | readers | readers (fetch_sub result) | exact number of concurrent readers |
+| `busy_mask` | readers | writer (acquire) | O(1) conservative busy indicator |
+| `published` | writer (store) | readers, writer (acquire) | current snapshot index |
+| `initialized` | writer (store once) | readers (acquire) | first-publication presence signal |
 
-### Семантика initialized
+### `initialized` semantics
 
-`initialized` устанавливается в `true` writer'ом **после** первой публикации и остаётся `true` навсегда. Reader проверяет его в начале `try_read` — единственная точка возврата `false` в установившемся режиме.
+`initialized` is set to `true` by writer **after** first publication and remains `true` forever. Reader checks it at the start of `try_read` - this is the only `false` return path in steady state.
 
-После установки в `true`: `load(acquire)` на x86 — обычный `mov`, стоимость минимальна. Writer при каждой публикации выполняет `store(true, release)` — идемпотентно, `true → true` не создаёт гонок.
+After set to `true`: `load(acquire)` on x86 is a plain `mov`, with minimal cost. Writer performs `store(true, release)` on each publication - idempotent, `true -> true` creates no races.
 
-### Инвариант связности refcnt и busy_mask
+### `refcnt` and `busy_mask` coherence invariant
 
 ```
-busy_mask[i] == 0  →  refcnt[i] == 0  (строго)
-busy_mask[i] == 1  →  refcnt[i] >= 0  (консервативно: бит опережает счётчик)
+busy_mask[i] == 0  ->  refcnt[i] == 0  (strict)
+busy_mask[i] == 1  ->  refcnt[i] >= 0  (conservative: bit may lead counter)
 ```
 
-Порядок операций reader'а:
-* **Установка claim:** `busy_mask.fetch_or(1<<i)` **до** `refcnt[i].fetch_add(1)`
-* **Снятие claim:** `refcnt[i].fetch_sub(1)` **до** `busy_mask.fetch_and(~(1<<i))` (только при переходе 1→0)
+Reader operation order:
+* **Claim set:** `busy_mask.fetch_or(1<<i)` **before** `refcnt[i].fetch_add(1)`
+* **Claim release:** `refcnt[i].fetch_sub(1)` **before** `busy_mask.fetch_and(~(1<<i))` (only on 1->0 transition)
 
 ---
 
-## Теорема: Writer Slot Availability при K = N+2
+## Theorem: Writer Slot Availability for K = N+2
 
-> В любой момент существует слот `j` такой что:
-> * `busy_mask[j] == 0` (не занят читателями)
-> * `j != published`   (не опубликован)
+> At any time there exists a slot `j` such that:
+> * `busy_mask[j] == 0` (not occupied by readers)
+> * `j != published`   (not currently published)
 >
-> то есть writer **всегда** может выбрать свободный, незаблокированный,
-> неопубликованный слот для записи.
+> meaning writer **always** can pick a free, unblocked,
+> unpublished slot for writing.
 
-**Доказательство:**
-Reader'а могут занять максимум `N` слотов (каждый держит строго ≤ 1 слота в любой момент) ⇒ свободно минимум `K − N = 2` слота ⇒ максимум один из них может быть `published` ⇒ остаётся минимум **один** свободный не-published слот. ∎
+**Proof:**
+Readers can occupy at most `N` slots (each reader holds at most one slot at any moment) -> at least `K - N = 2` slots are free -> at most one of them can be `published` -> at least **one** free non-published slot remains. ∎
 
-**Следствие:** writer не трогает `published` слот **никогда**. Слот стабилен для всех reader'ов на всё время между `published.store` и следующей публикацией. Verify не нужен.
-
----
-
-## Инвариант W-NoOverwritePublished
-
-> Writer никогда не пишет в слот `j` где `j == published`.
-
-Из этого инварианта напрямую следует:
-* reader не нуждается в verify — слот не может быть перезаписан пока он опубликован
-* `published` всегда валиден после первой публикации
-* torn read исключён структурно, а не протокольно
+**Consequence:** writer never touches the `published` slot. That slot is stable for all readers for the whole interval between `published.store` operations. Verify is unnecessary.
 
 ---
 
-## Инициализация объекта
+## Invariant W-NoOverwritePublished
+
+> Writer never writes to slot `j` where `j == published`.
+
+Direct consequences:
+* reader needs no verify - slot cannot be overwritten while published
+* `published` is always valid after first publication
+* torn read is excluded structurally, not by protocol retries
+
+---
+
+## Object initialization
 
 * `published = 0`
 * `initialized = false`
 * `busy_mask = 0`
-* `refcnt[i] = 0` для всех i
-* Содержимое `slots[0..K-1]` не определено до первой публикации
+* `refcnt[i] = 0` for all i
+* `slots[0..K-1]` contents are undefined before first publication
 
 ---
 
-## Псевдокод
+## Pseudocode
 
 ```cpp
 // Writer
@@ -132,47 +132,55 @@ void publish(const T& value) noexcept {
     const uint32_t busy = busy_mask.load(std::memory_order_acquire);
     const uint8_t  pub  = published.load(std::memory_order_acquire);
 
-    // Выбрать свободный не-published слот.
-    // По теореме при K=N+2 candidates всегда ненулевой.
+    // Pick a free non-published slot.
+    // By theorem, with K=N+2 candidates are always non-zero.
     const uint32_t candidates = ~busy & ~(1u << pub);
     const uint8_t  j = static_cast<uint8_t>(__builtin_ctz(candidates));
 
-    // Записать данные.
-    // W-NoOverwritePublished: j != pub гарантировано выбором слота.
+    // Write data.
+    // W-NoOverwritePublished: j != pub guaranteed by slot selection.
     slots[j] = value;
 
-    // Атомарно переключить публикацию.
+    // Atomically switch publication.
     published.store(j, std::memory_order_release);
 
-    // Сигнал инициализации — идемпотентен, безопасен при повторных вызовах.
+    // Initialization signal - idempotent, safe for repeated calls.
     initialized.store(true, std::memory_order_release);
 }
 
 // Reader
 bool try_read(T& out) noexcept {
-    // Шаг 1: проверить наличие данных.
-    // После первой публикации этот load всегда возвращает true.
+    // Step 1: check data availability.
+    // After first publication, this load always returns true.
     if (!initialized.load(std::memory_order_acquire)) {
         return false;
     }
 
-    // Шаг 2: загрузить опубликованный слот.
+    // --- critical section (preemption disabled) ---
+    // Closes the window between steps 2 and 3 on UP systems (Condition A).
+    // On SMP this is a no-op; race is documented in §Theoretical Bounds.
+    sys_preemption_disable();  // platform primitive (sys_preemption.hpp)
+
+    // Step 2: load published slot.
     const uint8_t i = static_cast<uint8_t>(
         published.load(std::memory_order_acquire));
 
-    // Шаг 3: установить claim.
-    // ПОРЯДОК КРИТИЧЕН: busy_mask до refcnt.
+    // Step 3: set claim.
+    // ORDER IS CRITICAL: busy_mask before refcnt.
     busy_mask.fetch_or(1u << i, std::memory_order_acq_rel);
     refcnt[i].fetch_add(1, std::memory_order_acq_rel);
 
-    // Шаг 4: читать данные.
-    // Verify не нужен: W-NoOverwritePublished гарантирует стабильность slots[i].
-    // Writer не может начать писать в i пока i == published,
-    // а published сменится только после завершения записи в j != i.
+    sys_preemption_enable();
+    // --- end critical section ---
+
+    // Step 4: read data.
+    // No verify required: W-NoOverwritePublished guarantees slot[i] stability.
+    // Writer cannot start writing i while i == published,
+    // and published changes only after a complete write to j != i.
     out = slots[i];
 
-    // Шаг 5: снять claim.
-    // ПОРЯДОК КРИТИЧЕН: refcnt до busy_mask.
+    // Step 5: release claim.
+    // ORDER IS CRITICAL: refcnt before busy_mask.
     if (refcnt[i].fetch_sub(1, std::memory_order_acq_rel) == 1) {
         busy_mask.fetch_and(~(1u << i), std::memory_order_release);
     }
@@ -182,102 +190,102 @@ bool try_read(T& out) noexcept {
 
 ---
 
-## Инварианты (Safety)
+## Invariants (Safety)
 
-### I1. Единоличная запись
+### I1. Single-writer data ownership
 
-Только writer выполняет записи в `slots[i]`, изменяет `published` и `initialized`.
+Only writer writes `slots[i]`, and only writer modifies `published` and `initialized`.
 
-### I2. Управление busy_mask и refcnt
+### I2. `busy_mask` and `refcnt` ownership
 
-Только reader'а изменяют `busy_mask` и `refcnt[i]`. Writer только **читает** `busy_mask` и `published` (acquire).
+Only readers modify `busy_mask` and `refcnt[i]`. Writer only **reads** `busy_mask` and `published` (acquire).
 
 ### I3. W-NoOverwritePublished
 
-Writer выбирает слот `j` где `j != published` и `busy_mask[j] == 0`. Запись в `slots[j]` начинается только после этого выбора. `published` переключается на `j` только **после** завершения записи.
+Writer chooses slot `j` where `j != published` and `busy_mask[j] == 0`. Writing to `slots[j]` begins only after this choice. `published` switches to `j` only **after** write completion.
 
-### I4. Чтение только под claim
+### I4. Read only under claim
 
-Reader читает `slots[i]` только при удержании claim: между `fetch_or(1<<i)` и финальным `fetch_and(~(1<<i))`.
+Reader reads `slots[i]` only while holding a claim: between `fetch_or(1<<i)` and final `fetch_and(~(1<<i))`.
 
-### I5. Порядок установки и снятия claim
+### I5. Claim set/release ordering
 
-**Установка** (строго в этом порядке):
-1. `busy_mask.fetch_or(1<<i, acq_rel)` — writer видит занятость немедленно
-2. `refcnt[i].fetch_add(1, acq_rel)` — фиксируем счётчик
+**Set** (strict order):
+1. `busy_mask.fetch_or(1<<i, acq_rel)` - writer observes occupancy immediately
+2. `refcnt[i].fetch_add(1, acq_rel)` - fix reader count
 
-**Снятие** (строго в этом порядке):
-1. `val = refcnt[i].fetch_sub(1, acq_rel)` — уменьшаем счётчик
-2. если `val == 1`: `busy_mask.fetch_and(~(1<<i), release)` — последний reader снимает бит
+**Release** (strict order):
+1. `val = refcnt[i].fetch_sub(1, acq_rel)` - decrement count
+2. if `val == 1`: `busy_mask.fetch_and(~(1<<i), release)` - last reader clears bit
 
-### I6. Стабильность published слота
+### I6. Published-slot stability
 
-Из I3 следует: пока `published == i`, writer не пишет в `slots[i]`. `slots[i]` стабилен на всё время между двумя последовательными `published.store`. Reader не нуждается в verify.
+From I3: while `published == i`, writer does not write `slots[i]`. `slots[i]` is stable throughout the interval between two consecutive `published.store` calls. Reader needs no verify.
 
-### I7. Монотонность initialized
+### I7. `initialized` monotonicity
 
-`initialized` переходит из `false` в `true` ровно один раз — после первой публикации. Обратный переход невозможен. После установки все последующие `load(acquire)` возвращают `true`.
+`initialized` transitions from `false` to `true` exactly once - after first publication. Reverse transition is impossible. Once set, all subsequent `load(acquire)` return `true`.
 
-#### Замечание об ABA
+#### ABA note
 
-Может ли writer дважды опубликовать один и тот же слот `i`? Да. Но в момент когда reader держит claim на `i` (`busy_mask[i]==1`, `refcnt[i]>0`) — writer не может выбрать `i` по I3. Данные в `slots[i]` стабильны на всё время чтения. ABA не нарушает корректности.
+Can writer publish the same slot `i` twice? Yes. But while a reader holds claim on `i` (`busy_mask[i]==1`, `refcnt[i]>0`), writer cannot select `i` by I3. `slots[i]` data stays stable during the entire read window. ABA does not break correctness.
 
 ---
 
-## Гарантии (Guarantees)
+## Guarantees
 
-### G1. Консистентность снапшота
+### G1. Snapshot consistency
 
-`try_read(out)` возвращает `true` и заполняет `out` консистентной копией последнего опубликованного состояния — после первой публикации всегда.
+`try_read(out)` returns `true` and fills `out` with a consistent copy of the latest published state - always after first publication.
 
-### G2. Отсутствие torn read (структурное)
+### G2. No torn read (structural)
 
-Невозможно пересечение «writer пишет `slots[i]`» и «reader читает `slots[i]`»: writer не пишет в `published` слот (I3), reader читает только `published` слот под claim (I4, I6).
+Overlap of "writer writes `slots[i]`" and "reader reads `slots[i]`" is impossible: writer does not write the published slot (I3), and reader reads only published slot under claim (I4, I6).
 
-### G3. Корректность при N reader'ах одного слота
+### G3. Correctness with N readers on one slot
 
-`refcnt[i]` корректно отслеживает количество одновременных читателей. `busy_mask[i]` снимается только когда последний reader завершает чтение.
+`refcnt[i]` correctly tracks the number of simultaneous readers. `busy_mask[i]` is cleared only when the last reader finishes.
 
 ### G4. Latest-wins
 
-Reader всегда получает последнее опубликованное состояние на момент `published.load(acquire)`.
+Reader always gets the latest state published at the time of `published.load(acquire)`.
 
 ### G5. No delivery guarantee
 
-Промежуточные публикации могут быть перезаписаны.
+Intermediate publications may be overwritten.
 
 ### G6. Bounded WCET
 
-* Writer: `load(busy_mask)` + `load(published)` + `ctz` + `copy(T)` + `store(published)` + `store(initialized)` — **фиксированное число операций**
-* Reader: `load(initialized)` + `load(published)` + `fetch_or` + `fetch_add` + `copy(T)` + `fetch_sub` + (условно) `fetch_and` — **фиксированное число операций**
+* Writer: `load(busy_mask)` + `load(published)` + `ctz` + `copy(T)` + `store(published)` + `store(initialized)` - **fixed number of operations**
+* Reader: `load(initialized)` + `load(published)` + `fetch_or` + `fetch_add` + `copy(T)` + `fetch_sub` + (conditional) `fetch_and` - **fixed number of operations**
 
 ### G7. Progress
 
-* Writer — **wait-free, O(1)**: `ctz(candidates)` детерминированно находит слот. По теореме `candidates` всегда ненулевой при K = N+2.
-* Reader — **wait-free, O(1)**: фиксированная последовательность без ветвлений влияющих на число атомарных операций.
+* Writer - **wait-free, O(1)**: `ctz(candidates)` deterministically finds a slot. By theorem, `candidates` is always non-zero for K = N+2.
+* Reader - **wait-free, O(1)**: fixed sequence without branches affecting the number of atomic operations.
 
-### G8. Отсутствие состояния NONE
+### G8. No NONE state
 
-`published` всегда содержит валидный индекс ∈ [0..K-1]. Нет окна недоступности данных после инициализации.
+`published` always contains a valid index in [0..K-1]. There is no data-unavailable window after initialization.
 
 ---
 
-## Задержка свежести
+## Freshness latency
 
-| Компонент | Величина |
+| Component | Value |
 |---|---|
-| Период публикации writer'а | `[0, T_w]` |
-| Период опроса reader'а | `[0, T_r]` |
-| Verify-fail | **отсутствует** |
-| Аппаратная видимость | `~0..50 нс` |
+| Writer publish period | `[0, T_w]` |
+| Reader poll period | `[0, T_r]` |
+| Verify-fail | **none** |
+| Hardware visibility | `~0..50 ns` |
 
 **Worst-case: `T_w + T_r`**
 
-Это оптимум для примитива с семантикой latest-wins и независимыми тактами writer'а и reader'а.
+This is optimal for a latest-wins primitive with independent writer and reader clocks.
 
 ---
 
-## Требования к типу T
+## Type `T` requirements
 
 ```
 std::is_trivially_copyable<T>::value == true
@@ -285,72 +293,90 @@ std::is_trivially_copyable<T>::value == true
 
 ---
 
-## Обязательные compile-time требования
+## Mandatory compile-time requirements
 
 * `N >= 1`, `K = N + 2`
-* `K <= 32` при `uint32_t` маске; `K <= 64` при `uint64_t` маске (то есть N ≤ 30 и N ≤ 62 соответственно)
-* `N <= 254` для `refcnt` типа `uint8_t`
+* `K <= 32` for `uint32_t` mask; `K <= 64` for `uint64_t` mask (that is, N <= 30 and N <= 62 respectively)
+* `N <= 254` for `refcnt` type `uint8_t`
 * `std::atomic<bool>::is_always_lock_free == true`
 * `std::atomic<uint8_t>::is_always_lock_free == true`
 * `std::atomic<uint32_t>::is_always_lock_free == true`
 * `std::is_trivially_copyable<T>::value == true`
 
-*(Опционально)* `published`, `initialized` и `busy_mask` на отдельной cache line от `refcnt[]` и данных слотов.
+*(Optional)* place `published`, `initialized`, and `busy_mask` on a separate cache line from `refcnt[]` and data slots.
 
-*(Опционально)* Round-robin выбор среди `candidates` вместо `ctz` — равномерный износ слотов. Не влияет на корректность.
-
----
-
-## Ограничения (Non-goals)
-
-* Не очередь событий — доставка каждой публикации не гарантируется.
-* N фиксировано на этапе компиляции.
-* Не поддерживает более 30 (uint32_t) или 62 (uint64_t) одновременных reader'ов без смены типа `busy_mask`.
+*(Optional)* round-robin slot choice among `candidates` instead of `ctz` for even slot wear. Does not affect correctness.
 
 ---
 
-## Theoretical Bounds (Теоретические пределы)
+## Limitations (Non-goals)
 
-### Недостижимость строгого wait-free для обоих участников на произвольном SMP
+* Not an event queue - delivery of every publication is not guaranteed.
+* N is fixed at compile time.
+* Does not support more than 30 (`uint32_t`) or 62 (`uint64_t`) simultaneous readers without changing `busy_mask` type.
 
-На произвольной SMP-системе **невозможно** одновременно обеспечить:
+---
 
-1. **Wait-free writer** — завершается за bounded число шагов независимо от действий reader'ов
-2. **Wait-free reader** — завершается за bounded число шагов независимо от действий writer'а
-3. **Отсутствие torn read/write** — консистентность данных при физически параллельном выполнении
+## Theoretical Bounds
 
-Это не недостаток реализации — это следствие фундаментального ограничения.
+### Impossibility of strict wait-free on both sides for arbitrary SMP
 
-**Доказательство (неформально):**
+On an arbitrary SMP system it is **impossible** to simultaneously guarantee:
 
-В момент когда reader загрузил `published == i` но ещё не защитил слот claim'ом — существует окно в котором writer физически параллельно может выбрать слот `i` для записи. Закрыть это окно можно только одним из двух способов:
+1. **Wait-free writer** - completes in bounded steps independent of reader actions
+2. **Wait-free reader** - completes in bounded steps independent of writer actions
+3. **No torn read/write** - consistent data under physically parallel execution
 
-* Writer проверяет не выбран ли слот reader'ом — но тогда writer **зависит от состояния reader'а** → не wait-free для writer'а.
-* Reader обнаруживает конфликт и повторяет попытку — но тогда **retry у reader'а** → не wait-free для reader'а.
+This is not an implementation flaw - it is a fundamental limit.
 
-Атомарное выполнение `load(published) + set(busy_mask)` как единой операции на двух независимых ячейках памяти невозможно без примитива с consensus number ≥ 2. Это частный случай результата Herlihy (1991) об иерархии консенсуса.
+**Proof sketch (informal):**
 
-### Карта достижимых гарантий
+At the moment when reader loaded `published == i` but has not yet protected the slot with a claim, there is a window in which writer can physically select slot `i` for writing in parallel. Closing this window is possible only in one of two ways:
 
-| Условие развёртывания | Writer | Reader | Примечание |
+* Writer checks whether reader selected the slot - then writer **depends on reader state** -> writer is not wait-free.
+* Reader detects conflict and retries - then **reader has retries** -> reader is not wait-free.
+
+Atomic execution of `load(published) + set(busy_mask)` as one operation on two independent memory locations is impossible without a primitive with consensus number >= 2. This is a special case of Herlihy's 1991 consensus hierarchy result.
+
+### Map of achievable guarantees
+
+| Deployment condition | Writer | Reader | Note |
 |---|---|---|---|
-| UP / одно ядро, без вытеснения | wait-free | wait-free | Физического параллелизма нет; compiler barrier достаточен |
-| SMP, writer пишет редко относительно тика reader'а | wait-free | wait-free на практике, lock-free формально | CAS retry теоретически возможен, практически не случается |
-| SMP, общий случай | wait-free | lock-free, bounded retry | CAS-модель; число retry ≤ числу публикаций за тик reader'а |
-| SMP, строгий wait-free для обоих | **недостижимо** | **недостижимо** | Теоретический предел |
+| UP / single core, no preemption | wait-free | wait-free | No physical parallelism; compiler barrier is sufficient |
+| SMP, writer publishes rarely relative to reader tick | wait-free | wait-free in practice, lock-free formally | CAS retry is theoretically possible but practically rare |
+| SMP, general case | wait-free | lock-free, bounded retry | CAS model; retries <= number of publications per reader tick |
+| SMP, strict wait-free for both | **unachievable** | **unachievable** | Theoretical limit |
 
-### Позиция SPMCSnapshot в этой карте
+### SPMCSnapshot position on this map
 
-SPMCSnapshot v6.2 без verify корректен при условии:
+SPMCSnapshot v6.2 without verify is correct under:
 
-**Условие A (рекомендуемое для RT):** Writer и reader'а выполняются на одном ядре без вытеснения в критических секциях (UP или RT-ядро с `SCHED_FIFO` / отключённым preemption). Физического параллелизма нет — обе стороны строго wait-free.
+**Condition A (recommended for RT):** writer and readers run on one core with no preemption inside critical sections (UP or RT core with `SCHED_FIFO` / preemption disabled). No physical parallelism - both sides are strictly wait-free.
 
-**Условие B (SMP с временны́м разделением):** Архитектура развёртывания гарантирует что writer завершил публикацию до того как reader'а начинают новый тик опроса. Например: writer на RT-ядре, reader'а опрашивают по таймеру с известным фазовым сдвигом.
+`try_read()` calls `sys_preemption_disable/enable` (from `stam/sys/sys_preemption.hpp`) around steps 2-3, closing this window on UP platforms. User must provide platform implementation:
 
-Для **произвольного SMP без этих условий** необходим verify после установки claim (CAS-модель). При этом reader становится lock-free с bounded retry, writer остаётся wait-free.
+```cpp
+// Example: Cortex-M (cmsis_gcc.h)
+namespace stam::sys {
+    void sys_preemption_disable_impl() noexcept { __disable_irq(); }
+    void sys_preemption_enable_impl()  noexcept { __enable_irq();  }
+}
 
-### Замечание о переброске данных между ядрами
+// Example: desktop/SMP test (no-op)
+namespace stam::sys {
+    void sys_preemption_disable_impl() noexcept {}
+    void sys_preemption_enable_impl()  noexcept {}
+}
+```
 
-Передача данных между ядрами на SMP сопряжена с аппаратными задержками cache coherency протокола (MESI/MOESI): от единиц до сотен наносекунд в зависимости от топологии (L1/L2/L3 miss, cross-NUMA). Это **дополнительная компонента задержки свежести** не отражённая в модели `T_w + T_r` — она платформенно-зависима и должна измеряться на целевом железе.
+Critical section WCET does not depend on `sizeof(T)` - it includes only 3 atomic operations. `copy(T)` is done outside the critical section.
 
-Именно поэтому в строгом RT-домене межъядерная коммуникация минимизируется архитектурно: RT-задачи пинируются на выделенные ядра, данные передаются через примитивы с явными барьерами, топология памяти учитывается при проектировании.
+**Condition B (SMP with temporal partitioning):** deployment architecture guarantees writer completes publication before readers start a new poll tick. Example: writer on RT core, readers polling on timer with known phase offset.
+
+For **arbitrary SMP without these conditions**, verify after claim set is required (CAS model). Then reader becomes lock-free with bounded retry; writer remains wait-free.
+
+### Note on cross-core data transfer
+
+Cross-core transfer on SMP involves hardware cache-coherency protocol latency (MESI/MOESI): from single digits to hundreds of nanoseconds depending on topology (L1/L2/L3 miss, cross-NUMA). This is an **extra freshness-latency component** not captured by the `T_w + T_r` model - it is platform-specific and must be measured on target hardware.
+
+That is why strict RT architectures minimize inter-core communication: RT tasks are pinned to dedicated cores, data is passed through primitives with explicit barriers, and memory topology is considered during system design.

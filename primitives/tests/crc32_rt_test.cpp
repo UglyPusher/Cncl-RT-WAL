@@ -78,13 +78,15 @@ static int g_failed = 0;
 // crc32c("123456789") == 0xE3069283
 static constexpr uint8_t kVec9[]  = {'1','2','3','4','5','6','7','8','9'};
 
-// RFC 3720 Appendix B.4 — three well-known CRC32C vectors:
-//   32 bytes of 0x00  → 0xAA36918A
-//   32 bytes of 0xFF  → 0x43ABA862
-//   32 bytes of 0x1C..0x3B (incrementing) → 0x4E79DD46
-static constexpr uint32_t kRfc3720_zeros_32    = 0xAA36918Au;
-static constexpr uint32_t kRfc3720_ones_32     = 0x43ABA862u;
-static constexpr uint32_t kRfc3720_incr_32     = 0x4E79DD46u;
+// RFC 3720 Appendix B.4 vectors (CRC32C integer values):
+//   32 bytes of 0x00              -> 0x8A9136AA
+//   32 bytes of 0xFF              -> 0x62A8AB43
+//   32 bytes of 0x00..0x1F        -> 0x46DD794E
+// Note: RFC also shows byte streams in network order; these tests compare
+// integer checksum values returned by crc32c().
+static constexpr uint32_t kRfc3720_zeros_32    = 0x8A9136AAu;
+static constexpr uint32_t kRfc3720_ones_32     = 0x62A8AB43u;
+static constexpr uint32_t kRfc3720_incr_32     = 0x46DD794Eu;
 
 // ---------------------------------------------------------------------------
 // Compile-time checks (static_assert)
@@ -138,7 +140,7 @@ TEST(test_rfc3720_ones_32) {
 
 TEST(test_rfc3720_incrementing_32) {
     uint8_t buf[32];
-    for (int i = 0; i < 32; ++i) buf[i] = static_cast<uint8_t>(0x1C + i);
+    for (int i = 0; i < 32; ++i) buf[i] = static_cast<uint8_t>(i);
     EXPECT_EQ(crc32c(buf, 32), kRfc3720_incr_32);
 }
 
@@ -296,14 +298,14 @@ TEST(test_table_entry_0_is_zero) {
 }
 
 TEST(test_table_entry_1) {
-    // Entry[1] must equal the reflected polynomial itself.
-    EXPECT_EQ(kCrc32cTable[1], kCrc32cPolyReflected);
+    // For reflected CRC32C table generation, entry[1] is:
+    // crc32c_table_entry(1) == 0xF26B8303.
+    EXPECT_EQ(kCrc32cTable[1], 0xF26B8303u);
 }
 
 TEST(test_table_256_entries_unique_spot_check) {
     // Spot-check: a few known entries from the CRC32C table.
-    // Entry[0xFF] is a well-known value for this polynomial.
-    EXPECT_EQ(kCrc32cTable[0xFF], 0x2D02EF8Du);
+    EXPECT_EQ(kCrc32cTable[0xFF], 0xAD7D5351u);
 }
 
 // --- constexpr evaluation ---

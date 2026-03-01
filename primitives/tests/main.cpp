@@ -1,4 +1,6 @@
 #include <cstdio>
+#include "./sys_preempt_lock.hpp"  // desktop no-op; replace with platform impl
+
 
 void crc32_tests();
 void dbl_buffer_tests();

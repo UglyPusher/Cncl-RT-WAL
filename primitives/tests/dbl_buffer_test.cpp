@@ -17,7 +17,6 @@
  */
 
 #include "stam/primitives/dbl_buffer.hpp"
-#include "./sys_preempt_lock.hpp"
 
 #include <atomic>
 #include <cassert>

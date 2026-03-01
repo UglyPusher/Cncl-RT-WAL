@@ -5,8 +5,9 @@
 #include <cstdint>
 #include <cstddef>
 #include <type_traits>
-#include "stam/sys/sys_align.hpp"      // SYS_CACHELINE_BYTES, SYS_CACHELINE_ALIGN
+#include "stam/sys/sys_align.hpp"       // SYS_CACHELINE_BYTES, SYS_CACHELINE_ALIGN
 #include "stam/sys/sys_compiler.hpp"   // SYS_FORCEINLINE, SYS_COMPILER_MSVC
+#include "stam/sys/sys_preemption.hpp" // stam::sys::preemption_disable/enable
 
 namespace stam::primitives {
 
@@ -37,19 +38,27 @@ namespace stam::primitives {
  *  - Together: writer↔reader slot access never overlaps structurally.
  *
  *  Validity conditions:
- *    Condition A (recommended for RT): writer and readers execute on a
- *      single core, or with preemption disabled in critical sections.
- *      Physical parallelism is absent; both sides are strictly wait-free.
+ *    Condition A (uniprocessor): try_read() uses sys_preemption_disable/
+ *      enable to protect the load-published → set-busy_mask window (steps
+ *      2–3). Physical parallelism is absent; protocol is fully correct.
  *    Condition B (SMP with temporal separation): architecture guarantees
  *      writer finishes publishing before readers begin a new polling tick.
  *
- *  On general SMP without Condition A or B, a narrow race exists between
- *  steps 2 (load published) and 3 (set busy_mask) in try_read(). See
- *  spec §Theoretical Bounds for full analysis and the CAS-model alternative.
+ *  On SMP without Condition B, preemption disable is insufficient:
+ *  physical parallelism between cores creates the same narrow race.
+ *  See spec §Theoretical Bounds for full analysis and the CAS-model alternative.
+ *
+ * PREEMPTION SAFETY (uniprocessor):
+ *  - try_read() disables preemption around steps 2–3 only (3 atomic ops):
+ *    load published → fetch_or busy_mask → fetch_add refcnt.
+ *    WCET of the critical section is independent of sizeof(T).
+ *  - copy(T) is outside the critical section (symmetric with Mailbox2Slot).
+ *  - On SMP: preemption disable is insufficient; see Validity conditions.
  *
  * RT APPLICABILITY:
  *  - publish(): wait-free, O(1). No locks. Bounded WCET.
- *  - try_read(): wait-free, O(1). No locks. Bounded WCET.
+ *  - try_read(): wait-free, O(1). Preemption disabled only for steps 2–3
+ *    (3 atomic ops, independent of sizeof(T)). copy(T) is outside.
  *
  * MISUSE:
  *  - More than 1 simultaneous writer → undefined behavior.
@@ -281,13 +290,17 @@ public:
     //             refcnt[i] -= 1 (acq_rel). If result was 1 (last reader):
     //             busy_mask &= ~(1<<i) (release).
     //
-    // NOTE: on general SMP without Condition A/B, a narrow race exists between
-    // steps 2 and 3 — see spec §Theoretical Bounds for details.
+    // Critical section (preemption disabled): covers steps 2–3 only.
+    //   WCET is independent of sizeof(T); copy(T) is outside (step 4).
+    //   On SMP, preemption disable is insufficient — see contract above.
     [[nodiscard]] bool try_read(T& out) noexcept {
         // Step 1: before first publish no data is available.
         if (!core_.ctrl.initialized.load(std::memory_order_acquire)) {
             return false;
         }
+
+        // --- critical section: load published + set claim ---
+        stam::sys::preemption_disable();
 
         // Step 2: load published slot index.
         const uint8_t i = core_.ctrl.published.load(std::memory_order_acquire);
@@ -296,6 +309,9 @@ public:
         // busy_mask must be visible to writer before refcnt confirms the claim.
         core_.ctrl.busy_mask.fetch_or(uint32_t(1u) << i, std::memory_order_acq_rel);
         core_.refcnt[i].fetch_add(1u, std::memory_order_acq_rel);
+
+        stam::sys::preemption_enable();
+        // --- end critical section ---
 
         // Step 4: copy data from slot i.
         // Slot i is stable: writer cannot write here while i == published

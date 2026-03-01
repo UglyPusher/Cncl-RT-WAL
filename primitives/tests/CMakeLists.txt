@@ -14,6 +14,7 @@ add_executable(stam_tests
     mailbox2slot_test.cpp
     spsc_ring_test.cpp
     spmc_snapshot_test.cpp
+    sys_preempt_lock.cpp
     main.cpp
 )
 

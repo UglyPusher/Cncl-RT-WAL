@@ -1,49 +1,49 @@
 # Mailbox2Slot (SPSC Snapshot Mailbox)
 
-`docs/contracts/Mailbox2Slot.md` · Revision 1.4 — February 2026
+`docs/contracts/Mailbox2Slot.md` · Revision 1.4 - February 2026
 
 ---
 
-## Назначение
+## Purpose
 
-Примитив передачи **снапшота состояния** от одного писателя к одному читателю.
+A primitive for transferring a **state snapshot** from one writer to one reader.
 
-**Семантика: latest-wins.** Промежуточные публикации могут быть потеряны.
+**Semantics: latest-wins.** Intermediate publications may be lost.
 
 ---
 
-## Модель
+## Model
 
-### Участники
+### Participants
 
-* **Writer**: ровно один поток/ядро, только он пишет в слоты и меняет `pub_state`.
-* **Reader**: ровно один поток/ядро, только он читает и меняет `lock_state`.
+* **Writer**: exactly one thread/core; only writer writes slots and changes `pub_state`.
+* **Reader**: exactly one thread/core; only reader reads data and changes `lock_state`.
 
-### Память
+### Memory
 
-* 2 слота: `S[0]`, `S[1]` типа `T`
-* Атомарные состояния:
-  * `pub_state ∈ {0,1,2}`: опубликован слот 0/1 или **NONE(2)**
-  * `lock_state ∈ {0,1,2}`: reader держит слот 0/1 или **UNLOCKED(2)**
+* 2 slots: `S[0]`, `S[1]` of type `T`
+* Atomic states:
+  * `pub_state in {0,1,2}`: published slot 0/1 or **NONE(2)**
+  * `lock_state in {0,1,2}`: reader holds slot 0/1 or **UNLOCKED(2)**
 
-### Атомики и барьеры
+### Atomics and barriers
 
-> **Memory model:** Реализация обязана использовать `std::atomic<state_t>` (`state_t` — тип состояния, обычно `uint8_t`) из C++11 (или новее) с операциями `load(std::memory_order_acquire)` и `store(std::memory_order_release)`. Платформенные интринсики допустимы только если они предоставляют эквивалентные гарантии happens-before на целевой архитектуре. Использование `memory_order_relaxed` **запрещено** для операций, участвующих в happens-before цепочках между writer и reader.
+> **Memory model:** implementation must use `std::atomic<state_t>` (`state_t` is the state type, usually `uint8_t`) from C++11+ with `load(std::memory_order_acquire)` and `store(std::memory_order_release)`. Platform intrinsics are allowed only if they provide equivalent happens-before guarantees on the target architecture. `memory_order_relaxed` is **forbidden** for operations participating in writer-reader happens-before chains.
 
-* `pub_state` и `lock_state` — atomics **lock-free** на целевой платформе
+* `pub_state` and `lock_state` are **lock-free** atomics on target platform
 * `pub_state.store(..., release)`, `pub_state.load(..., acquire)`
 * `lock_state.store(..., release)`, `lock_state.load(..., acquire)`
-* **Исключение:** `pub_state.load(relaxed)` в I5-ветке writer'а допустим, так как writer является единственным **пишущим** (`single-writer`) для `pub_state`; это read-my-own-write без необходимости дополнительного упорядочивания с reader'ом (упорядочивание уже обеспечено предшествующим `lock_state.load(acquire)`).
+* **Exception:** `pub_state.load(relaxed)` in writer I5 branch is allowed because writer is the only **writer** (`single-writer`) for `pub_state`; this is read-my-own-write and does not require extra ordering with reader (ordering is already provided by preceding `lock_state.load(acquire)`).
 
 ---
 
-## Инициализация
+## Initialization
 
-После создания объекта:
+After object construction:
 
-* `pub_state` должен быть установлен в `NONE`
-* `lock_state` должен быть установлен в `UNLOCKED`
-* Содержимое слотов `S[0]` и `S[1]` не определено до первой публикации
+* `pub_state` must be set to `NONE`
+* `lock_state` must be set to `UNLOCKED`
+* Slot contents `S[0]` and `S[1]` are undefined before first publication
 
 ```cpp
 // init:
@@ -51,49 +51,49 @@ pub_state  = NONE      // 2
 lock_state = UNLOCKED  // 2
 ```
 
-Reader, вызывающий `try_read` до первой публикации, всегда получает `false`.
+A reader calling `try_read` before first publication always gets `false`.
 
 ---
 
-## API семантика
+## API semantics
 
 ### Writer
 
-`publish(value)` — публикует новое состояние. Внутренний алгоритм:
+`publish(value)` publishes a new state. Internal algorithm:
 
-1. **Критическая секция** (preemption disabled):
-   a. Однократно прочитать `lock_state` (acquire) и выбрать слот `j != lock_state`.
-   b. Если `pub_state == j` — выполнить invalidate: `pub_state = NONE` (release).
-   c. Снять запрет вытеснения.
-2. **Вне критической секции:** записать данные в `S[j]`, опубликовать `pub_state = j` (release).
+1. **Critical section** (preemption disabled):
+   a. Read `lock_state` once (acquire) and select slot `j != lock_state`.
+   b. If `pub_state == j`, perform invalidate: `pub_state = NONE` (release).
+   c. Re-enable preemption.
+2. **Outside critical section:** write data to `S[j]`, publish `pub_state = j` (release).
 
-Допускается overwrite: writer может обновлять один и тот же слот многократно, пока reader держит другой.
+Overwrite is allowed: writer may update the same slot repeatedly while reader holds the other one.
 
-#### Обоснование границ критической секции
+#### Critical section boundary rationale
 
-Критическая секция защищает **только** шаги (a) и (b) — выбор слота и его отметку как недоступного. Запись данных `copy(T)` намеренно вынесена за границу.
+Critical section protects **only** steps (a) and (b): slot selection and marking it unavailable. `copy(T)` is intentionally outside.
 
-**Инвариант на выходе из критической секции:** `pub_state != j` или `pub_state == NONE`. Любой reader, пришедший после `sys_preemption_enable()`, не найдёт слот `j` опубликованным и не сможет начать claim на него. Следовательно, запись `S[j]` безопасна без защиты от вытеснения.
+**Post-critical-section invariant:** `pub_state != j` or `pub_state == NONE`. Any reader arriving after `sys_preemption_enable()` will not see slot `j` as published and cannot start claim on it. Therefore writing `S[j]` is safe without preemption protection.
 
-**WCET критической секции** не зависит от `sizeof(T)` — содержит только атомарные операции.
+**Critical section WCET** does not depend on `sizeof(T)` - only atomic operations are inside.
 
 ### Reader
 
 `try_read(out)`:
 
-* делает bounded attempt получить консистентный снапшот
-* если не получилось (NONE или гонка публикации) → возвращает `false`; reader продолжает работать со старым состоянием (sticky state)
-* **retry отсутствует** — при отказе reader уходит на следующий тик
+* performs a bounded attempt to get a consistent snapshot
+* if failed (NONE or publication race), returns `false`; reader keeps previous (sticky) state
+* **no retry** - on failure reader proceeds to next tick
 
-Claim-verify (steps 1–4) выполняется в критической секции (preemption disabled): три атомарные операции, не зависит от `sizeof(T)`. Устраняет false-возвраты, вызванные вытеснением writer'ом в окне между p1 и p2. `copy(T)` вынесен за границу критической секции — симметрично с writer'ом.
+Claim-verify (steps 1-4) is executed in a critical section (preemption disabled): three atomic operations, independent of `sizeof(T)`. This removes false negatives caused by writer preemption in the `p1` to `p2` window. `copy(T)` is outside the critical section, symmetric with writer.
 
-#### Постусловие `try_read`
+#### `try_read` postcondition
 
-> По завершении `try_read` (независимо от возвращаемого значения — `true` или `false`) выполняется `lock_state == UNLOCKED`. Это гарантирует что lock никогда не «зависнет», в том числе при fail по `p2 ≠ p1`.
+> On `try_read` completion (regardless of return value `true` or `false`), `lock_state == UNLOCKED` holds. This guarantees lock is never left hanging, including failure on `p2 != p1`.
 
 ---
 
-## Псевдокод
+## Pseudocode
 
 ```cpp
 // init
@@ -102,55 +102,55 @@ lock_state = UNLOCKED  // 2
 
 // Writer
 void publish(const T& value) {
-    // --- критическая секция: выбор слота + invalidate ---
+    // --- critical section: slot selection + invalidate ---
     sys_preemption_disable();
 
-    // Шаг 1: выбор слота.
-    // acquire: happens-before с reader's lock_state.store(release).
+    // Step 1: select slot.
+    // acquire: happens-before with reader's lock_state.store(release).
     int locked = lock_state.load(std::memory_order_acquire);
-    int j = (locked == 1) ? 0 : 1;  // при UNLOCKED(2) даёт 1 — допустимо
+    int j = (locked == 1) ? 0 : 1;  // UNLOCKED(2) also maps to 1, valid
 
-    // Шаг 2: invalidate если слот j уже опубликован (I5).
-    // relaxed: writer — единственный пишущий (single-writer) pub_state; read-my-own-write.
-    // Гонки с reader'ом здесь нет: pub_state == j => lock_state != j.
+    // Step 2: invalidate if slot j is already published (I5).
+    // relaxed: writer is single-writer for pub_state; read-my-own-write.
+    // no race with reader here: pub_state == j implies lock_state != j.
     if (pub_state.load(std::memory_order_relaxed) == j) {
         pub_state.store(NONE, std::memory_order_release);
     }
 
     sys_preemption_enable();
-    // --- конец критической секции ---
-    // Инвариант: pub_state != j  OR  pub_state == NONE.
-    // Reader не может начать claim на j до pub_state.store(j) ниже.
+    // --- end critical section ---
+    // Invariant: pub_state != j  OR  pub_state == NONE.
+    // Reader cannot claim j before pub_state.store(j) below.
 
-    // Шаг 3: запись данных и публикация (вне критической секции).
+    // Step 3: data write and publish (outside critical section).
     S[j] = value;
     pub_state.store(j, std::memory_order_release);
 }
 
 // Reader
 bool try_read(T& out) {
-    // --- критическая секция: claim-verify (3 атомарные операции) ---
+    // --- critical section: claim-verify (3 atomic operations) ---
     sys_preemption_disable();
 
     int p1 = pub_state.load(std::memory_order_acquire);
     if (p1 == NONE) {
         sys_preemption_enable();
-        // lock_state уже UNLOCKED по постусловию предыдущего вызова
+        // lock_state is already UNLOCKED by previous-call postcondition
         return false;
     }
     lock_state.store(p1, std::memory_order_release);
     int p2 = pub_state.load(std::memory_order_acquire);
 
     sys_preemption_enable();
-    // --- конец критической секции ---
-    // Инвариант: claim установлен (lock_state == p1) или уже снят (NONE-путь).
-    // copy(T) вне критической секции — симметрично с writer'ом.
+    // --- end critical section ---
+    // Invariant: claim is set (lock_state == p1) or already released (NONE path).
+    // copy(T) is outside critical section, symmetric with writer.
 
     if (p2 != p1) {
         lock_state.store(UNLOCKED, std::memory_order_release);
         return false;
     }
-    out = S[p1];  // копирование вне критической секции
+    out = S[p1];  // copy outside critical section
     lock_state.store(UNLOCKED, std::memory_order_release);
     return true;
 }
@@ -158,122 +158,122 @@ bool try_read(T& out) {
 
 ---
 
-## Инварианты (Safety)
+## Invariants (Safety)
 
-### I1. Единоличная запись
+### I1. Single-writer data writes
 
-Только writer выполняет записи в `S[i]` и изменяет `pub_state`.
+Only writer writes `S[i]` and modifies `pub_state`.
 
-### I2. Единоличное владение lock
+### I2. Single ownership of lock
 
-Только reader **изменяет** `lock_state`. Writer вправе **читать** `lock_state` (для выбора слота), но не изменяет его.
+Only reader **modifies** `lock_state`. Writer may **read** `lock_state` (for slot selection), but does not modify it.
 
-### I3. Запрет записи в залоченный слот
+### I3. No writes into locked slot
 
-Writer читает `lock_state` (acquire) под защитой от вытеснения, выбирает `j != lock_state`, после чего снимает защиту. Повторная проверка `lock_state` после записи данных не требуется — к этому моменту инвариант на выходе из критической секции гарантирует, что reader не может начать claim на `j` (дополнительная защита обеспечивается verify-шагом reader'а, I6).
+Writer reads `lock_state` (acquire) under preemption protection, chooses `j != lock_state`, then exits protection. Re-checking `lock_state` after data write is not required: by that point the post-critical-section invariant guarantees reader cannot start claim on `j` (additional guard is provided by reader verify step, I6).
 
-Формально: writer **не начинает** запись в слот `i`, если на момент принятия решения `lock_state == i`.
+Formally: writer **does not start** writing slot `i` if `lock_state == i` at decision time.
 
-### I4. Чтение только залоченного слота
+### I4. Read only locked slot
 
-Reader читает `S[i]` **только** если `lock_state == i` (claim удерживается на всё время чтения).
+Reader reads `S[i]` **only if** `lock_state == i` (claim is held for the entire read).
 
-### I5. Запрет записи в опубликованный слот без invalidate
+### I5. No writes into published slot without invalidate
 
-Если writer собирается писать в слот `j` и в данный момент `pub_state == j`, writer обязан (в пределах критической секции):
+If writer plans to write slot `j` and currently `pub_state == j`, writer must (inside critical section):
 
 1. `pub_state = NONE` (release)
 
-После выхода из критической секции:
+After critical section:
 
-2. записать данные в `S[j]`
+2. write data to `S[j]`
 3. `pub_state = j` (release)
 
-**Цель:** исключить начало чтения reader'ом во время записи. После шага 1 reader, пришедший в любой момент до шага 3, увидит `pub_state == NONE` и вернёт `false`.
+**Goal:** prevent reader from starting read during write. After step 1, any reader arriving before step 3 sees `pub_state == NONE` and returns `false`.
 
-### I6. Claim-verify у reader (защита от «stale pub»)
+### I6. Reader claim-verify (stale-pub protection)
 
-Reader обязан подтверждать, что публикация не изменилась при захвате:
+Reader must confirm publication did not change during claim:
 
 1. `p1 = pub_state.load(acquire)`
-2. если `p1 == NONE` → `return false` *(lock_state уже UNLOCKED по постусловию)*
+2. if `p1 == NONE` -> `return false` *(lock_state already UNLOCKED by postcondition)*
 3. `lock_state.store(p1, release)`
 4. `p2 = pub_state.load(acquire)`
-5. если `p2 ≠ p1` → `lock_state = UNLOCKED`, `return false` *(без retry)*
+5. if `p2 != p1` -> `lock_state = UNLOCKED`, `return false` *(no retry)*
 
-Только если `p1 == p2` reader имеет право читать `S[p1]`.
+Reader may read `S[p1]` only if `p1 == p2`.
 
-#### Замечание об ABA
+#### ABA note
 
-Возможен ли сценарий, когда `pub_state` изменилось и вернулось к исходному значению между шагами 1 и 4 (`p1 == p2`, но данные «чужие»)?
+Can `pub_state` change and return to original value between steps 1 and 4 (`p1 == p2` but data is different)?
 
-Нет. ABA исключён структурно. Цепочка рассуждений:
+No. ABA is structurally excluded. Reasoning:
 
-1. Reader выполнил `lock_state.store(p1, release)` на шаге 3.
-2. Writer читает `lock_state` с `acquire` в критической секции — по правилу happens-before (release → acquire) writer **гарантированно видит** `lock_state == p1`.
-3. По I3 writer не начинает запись в слот `p1`, пока `lock_state == p1`.
-4. Следовательно, данные в `S[p1]` не изменялись с момента первоначальной публикации.
-5. При `p1 == p2` reader читает консистентный снапшот.
+1. Reader executed `lock_state.store(p1, release)` at step 3.
+2. Writer reads `lock_state` with `acquire` inside critical section - by happens-before (release -> acquire), writer **must observe** `lock_state == p1`.
+3. By I3 writer does not start writing slot `p1` while `lock_state == p1`.
+4. Therefore data in `S[p1]` did not change since original publication.
+5. If `p1 == p2`, reader reads a consistent snapshot.
 
-Безопасность ABA обеспечивается комбинацией I3, happens-before между `store(release)` reader'а и `load(acquire)` writer'а, **и** атомарностью критических секций обоих участников на вытесняемых системах.
+ABA safety is provided by combination of I3, happens-before between reader `store(release)` and writer `load(acquire)`, **and** critical-section atomicity of both participants on preemptible systems.
 
-### Лемма: Safe Slot Availability
+### Lemma: Safe Slot Availability
 
-> Writer всегда имеет доступный слот для записи (из I2 и I3). Поскольку reader единственный и не может держать более одного lock одновременно, в любой момент залочен не более одного слота. Writer выбирает слот `j != lock_state` (или любой при `lock_state == UNLOCKED`). Слот `j` никогда не залочен, запись в него всегда легальна по I3. Блокировка writer'а невозможна; G6 (wait-free) выполняется безусловно.
+> Writer always has an available slot for writing (from I2 and I3). Since there is one reader and it cannot hold more than one lock at a time, at most one slot is locked at any moment. Writer chooses `j != lock_state` (or any slot when `lock_state == UNLOCKED`). Slot `j` is never locked, so writing it is always legal by I3. Writer blocking is impossible; G6 (wait-free) holds unconditionally.
 
 ---
 
-## Гарантии (Guarantees)
+## Guarantees
 
-### G1. Консистентность снапшота
+### G1. Snapshot consistency
 
-Если `try_read(out)` возвращает `true`, то `out` является **консистентной копией** некоторого состояния `T`, которое было опубликовано writer'ом.
+If `try_read(out)` returns `true`, then `out` is a **consistent copy** of some writer-published state `T`.
 
-### G2. Отсутствие torn read
+### G2. No torn read
 
-Невозможно пересечение «writer пишет `S[i]`» и «reader читает `S[i]`» при соблюдении инвариантов I3–I6 **и** платформенных требований (§Preemption Safety). На SMP эта гарантия не достижима средствами стандарта C++ — см. §Known Limitations.
+Overlap of "writer writes `S[i]`" and "reader reads `S[i]`" is impossible when invariants I3-I6 **and** platform requirements (§Preemption Safety) hold. On SMP this guarantee is not achievable under pure ISO C++ guarantees - see §Known Limitations.
 
 ### G3. Latest-at-claim (freshness)
 
-При успешном `try_read` reader получает состояние, опубликованное writer'ом не позднее момента `lock_state.store(p1, release)` (шаг 3 в I6). Состояния, опубликованные после этого момента, могут быть не отражены — это допустимо по семантике latest-wins.
+On successful `try_read`, reader gets a state published no later than `lock_state.store(p1, release)` time (step 3 in I6). States published after that may be missing - this is allowed by latest-wins semantics.
 
 ### G4. No delivery guarantee
 
-Не гарантируется, что reader увидит каждую публикацию. Промежуточные публикации могут быть перезаписаны.
+Reader is not guaranteed to observe every publication. Intermediate publications may be overwritten.
 
 ### G5. Bounded WCET
 
-* Writer (критическая секция): фиксированное число атомарных операций; не зависит от `sizeof(T)`.
-* Writer (полный `publish`): критическая секция + `write(T)` + одна атомарная публикация.
-* Reader (критическая секция): три атомарные операции (claim-verify); не зависит от `sizeof(T)`.
-* Reader (полный `try_read`): критическая секция + `copy(T)` + release; без бесконечных циклов.
+* Writer (critical section): fixed number of atomic operations; independent of `sizeof(T)`.
+* Writer (full `publish`): critical section + `write(T)` + one atomic publication.
+* Reader (critical section): three atomic operations (claim-verify); independent of `sizeof(T)`.
+* Reader (full `try_read`): critical section + `copy(T)` + release; no unbounded loops.
 
 ### G6. Progress
 
-При корректной платформенной реализации атомиков:
+With correct platform atomic implementation:
 
-* Writer — **wait-free** (не ждёт reader; см. Лемму Safe Slot Availability)
-* Reader — **wait-free** для `try_read` (retry отсутствует)
+* Writer - **wait-free** (does not wait for reader; see Safe Slot Availability lemma)
+* Reader - **wait-free** for `try_read` (no retry)
 
 ---
 
-## Требования к типу T
+## Type `T` requirements
 
 ```
 std::is_trivially_copyable<T>::value == true
 ```
 
-Копирование `T` выполняется под защитой claim (`lock_state`) простым присваиванием или `std::memcpy`. Нетривиальные конструкторы копирования, виртуальные функции и синхронизирующие примитивы внутри `T` недопустимы в RT-контексте.
+Copying `T` is performed under claim (`lock_state`) via plain assignment or `std::memcpy`. Non-trivial copy constructors, virtual functions, and internal synchronization primitives in `T` are not allowed in RT context.
 
 ---
 
-## Обязательные compile-time требования
+## Mandatory compile-time requirements
 
-* `std::atomic<state_t>::is_always_lock_free == true` (state_t обычно `uint8_t`)
-* `sizeof(state_t) == 1` (или другая нативная lock-free ширина, разрешённая в `sys_config`)
+* `std::atomic<state_t>::is_always_lock_free == true` (`state_t` usually `uint8_t`)
+* `sizeof(state_t) == 1` (or another native lock-free width allowed in `sys_config`)
 * `std::is_trivially_copyable<T>::value == true`
 
-`pub_state` и `lock_state` обёрнуты в `CachelinePadded<A>` — шаблон, выравнивающий atomic по границе cacheline и добавляющий padding до полного размера cacheline. Корректность layout подтверждается:
+`pub_state` and `lock_state` are wrapped in `CachelinePadded<A>` - a template that aligns atomic to cache-line boundary and pads to full cache-line size. Layout correctness is confirmed by:
 
 ```cpp
 static_assert(sizeof(CachelinePadded<std::atomic<uint8_t>>) == SYS_CACHELINE_BYTES);
@@ -281,28 +281,28 @@ static_assert(sizeof(Slot) % SYS_CACHELINE_BYTES == 0);
 static_assert(sizeof(Mailbox2SlotCore<T>) == 2*sizeof(Slot) + 2*sizeof(CachelinePadded<...>));
 ```
 
-Это гарантирует отсутствие false sharing между слотами и между контрольными словами — не как намерение, а как compile-time факт.
+This guarantees no false sharing between slots and control words - not as an intent, but as a compile-time fact.
 
 ---
 
 ## Preemption Safety
 
-### Вытесняемые однопроцессорные системы
+### Preemptible single-processor systems
 
-На системах с вытеснением (RTOS, Linux PREEMPT_RT, bare-metal с IRQ на writer-контексте) writer обязан защитить блок **выбора слота + invalidate** от вытеснения.
+On preemptible systems (RTOS, Linux PREEMPT_RT, bare metal with IRQ in writer context) writer must protect **slot selection + invalidate** from preemption.
 
-**Обоснование:** без защиты возможен сценарий:
+**Rationale:** without protection, this scenario is possible:
 
-1. Writer читает `lock_state == UNLOCKED`, выбирает `j`.
-2. Writer вытесняется прерыванием.
-3. Reader выполняет `try_read`, залочивает тот же слот `j`, читает `S[j]`.
-4. Writer возобновляется со stale `locked`, пишет в `S[j]` — **torn read**.
+1. Writer reads `lock_state == UNLOCKED`, selects `j`.
+2. Writer is preempted by interrupt.
+3. Reader runs `try_read`, locks the same slot `j`, reads `S[j]`.
+4. Writer resumes with stale `locked`, writes into `S[j]` - **torn read**.
 
-Критическая секция охватывает только атомарные операции выбора и invalidate. `copy(T)` вынесен за её пределы — **WCET прерываний не зависит от `sizeof(T)`**.
+Critical section covers only atomic selection and invalidate operations. `copy(T)` is outside - **interrupt WCET does not depend on `sizeof(T)`**.
 
-**Платформенные механизмы** (`sys/sys_preemption.hpp`):
+**Platform mechanisms** (`sys/sys_preemption.hpp`):
 
-| Платформа | Механизм |
+| Platform | Mechanism |
 |---|---|
 | bare-metal ARM Cortex-M | `__disable_irq()` / `__enable_irq()` |
 | FreeRTOS | `taskENTER_CRITICAL()` / `taskEXIT_CRITICAL()` |
@@ -311,53 +311,53 @@ static_assert(sizeof(Mailbox2SlotCore<T>) == 2*sizeof(Slot) + 2*sizeof(Cacheline
 
 ### Reader
 
-`try_read()` защищает claim-verify (steps 1–4) аналогичной критической секцией: три атомарные операции, не зависит от `sizeof(T)`. Устраняет false-возвраты вызванные вытеснением writer'ом в окне между загрузкой `p1` и проверкой `p2`.
+`try_read()` protects claim-verify (steps 1-4) with a similar critical section: three atomic operations, independent of `sizeof(T)`. This removes false returns caused by writer preemption between loading `p1` and checking `p2`.
 
-### Невытесняемые системы / cooperative scheduling
+### Non-preemptible systems / cooperative scheduling
 
-На системах без вытеснения (cooperative RTOS, bare-metal superloop без IRQ на writer-контексте) критические секции технически не требуются. `sys_preemption_disable/enable` реализуются как no-op.
+On non-preemptible systems (cooperative RTOS, bare-metal superloop without IRQ in writer context), critical sections are technically unnecessary. `sys_preemption_disable/enable` are implemented as no-op.
 
 ---
 
-## Ограничения (Non-goals и Known Limitations)
+## Limitations (Non-goals and Known Limitations)
 
-### Не очередь событий
+### Not an event queue
 
-Примитив не гарантирует доставку каждого обновления.
+Primitive does not guarantee delivery of every update.
 
-### Не поддерживает более одного reader
+### No support for multiple readers
 
-Расширение требует refcount/epochs/3+ слота.
+Extension requires refcount/epochs/3+ slots.
 
-### Указатель на слот
+### Slot pointer usage
 
-Чтение «по месту» допустимо только внутри claim/release; хранение указателя на слот после release запрещено.
+In-place reading is allowed only within claim/release; storing slot pointer after release is forbidden.
 
-### Known Limitation: torn read на SMP
+### Known Limitation: torn read on SMP
 
-На многопроцессорных системах (SMP) запрет вытеснения на одном ядре не предотвращает параллельный доступ writer'а и reader'а к одному слоту с другого ядра.
+On multiprocessor systems (SMP), disabling preemption on one core does not prevent parallel writer/reader access to one slot from another core.
 
-**Сценарий:**
+**Scenario:**
 
-1. Writer (ядро 0) завершает критическую секцию: выбрал `j = kSlot1`, выполнил invalidate (`pub_state = NONE`).
-2. Writer начинает запись `S[1]`.
-3. Reader (ядро 1) одновременно видит `pub_state == NONE` → `false`... но возможен вариант, когда reader успел залочить `kSlot1` до invalidate writer'а и прошёл verify.
-4. Writer пишет в `S[1]`, reader читает из `S[1]` — конкурентный доступ к не-атомарному `T`.
+1. Writer (core 0) exits critical section: selected `j = kSlot1`, performed invalidate (`pub_state = NONE`).
+2. Writer starts writing `S[1]`.
+3. Reader (core 1) concurrently sees `pub_state == NONE` -> `false`... but a variant is possible where reader locked `kSlot1` before writer invalidate and passed verify.
+4. Writer writes `S[1]`, reader reads `S[1]` - concurrent access to non-atomic `T`.
 
-По C++ memory model это **undefined behavior**.
+By C++ memory model this is **undefined behavior**.
 
-**Корректность на практике** обеспечивается платформенными гарантиями когерентности cacheline на ARM Cortex и x86-64 для `sizeof(T) ≤ SYS_CACHELINE_BYTES` и выровненных данных. Это **платформенная гарантия**, выходящая за пределы стандарта C++.
+**Practical correctness** relies on platform cacheline-coherency guarantees on ARM Cortex and x86-64 for `sizeof(T) <= SYS_CACHELINE_BYTES` and aligned data. This is a **platform guarantee** outside ISO C++.
 
-**Формальная верификация** по стандарту C++ невозможна без атомизации `T`, что несовместимо с RT-контрактом данного примитива. Использование `Mailbox2Slot` на SMP — осознанный выбор с принятием этого ограничения.
+**Formal verification** under ISO C++ is impossible without atomizing `T`, which is incompatible with this primitive's RT contract. Using `Mailbox2Slot` on SMP is a conscious tradeoff with explicit acceptance of this limitation.
 
 ---
 
 ## Changelog
 
-| Revision | Дата | Изменения |
+| Revision | Date | Changes |
 |---|---|---|
-| 1.0 | — | Начальная версия |
-| 1.1 | — | Уточнение ABA-доказательства |
-| 1.2 | — | Добавлен раздел G3, уточнена формулировка I5 |
-| 1.3 | Feb 2026 | Уточнение memory_order; добавлена Лемма Safe Slot Availability |
-| 1.4 | Feb 2026 | Критические секции в `publish()` и `try_read()` для вытесняемых систем; `pub_state.load(relaxed)` в I5 с обоснованием; `CachelinePadded<>` wrapper + `static_assert` на layout; `sole owner` → `single-writer`; `std::atomic<T>` → `std::atomic<state_t>` в memory model; §Preemption Safety (writer + reader); §Known Limitations (SMP torn read); уточнена G2, G3, G5; init-блок в псевдокод |
+| 1.0 | - | Initial version |
+| 1.1 | - | ABA proof clarification |
+| 1.2 | - | Added section G3, clarified I5 wording |
+| 1.3 | Feb 2026 | Memory-order clarification; added Safe Slot Availability lemma |
+| 1.4 | Feb 2026 | Critical sections in `publish()` and `try_read()` for preemptible systems; `pub_state.load(relaxed)` in I5 with rationale; `CachelinePadded<>` wrapper + layout `static_assert`; `sole owner` -> `single-writer`; `std::atomic<T>` -> `std::atomic<state_t>` in memory model; §Preemption Safety (writer + reader); §Known Limitations (SMP torn read); clarified G2, G3, G5; init block in pseudocode |

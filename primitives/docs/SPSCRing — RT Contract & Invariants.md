@@ -1,523 +1,525 @@
-# SPSCRing — RT Contract & Invariants
+# SPSCRing - RT Contract & Invariants
 
 ## 0. Scope
 
-`SPSCRing<T, Capacity>` — **Single-Producer / Single-Consumer** кольцевой буфер фиксированного размера для передачи элементов типа `T` между двумя контекстами исполнения:
+`SPSCRing<T, Capacity>` is a **Single-Producer / Single-Consumer** fixed-size ring buffer for passing elements of type `T` between two execution contexts:
 
-* **Producer**: один поток/контекст записи (включая hard-RT).
-* **Consumer**: один поток/контекст чтения (обычно non-RT).
+* **Producer**: one write thread/context (including hard-RT).
+* **Consumer**: one read thread/context (typically non-RT).
 
-Компонент предназначен для **bounded, deterministic, lossy publication** данных со стороны producer:
+The component is designed for **bounded, deterministic, lossy publication** from the producer side:
 
-* без блокировок
-* без системных вызовов
-* с **ограниченной ёмкостью = Capacity − 1**
-* с возможной **потерей данных при переполнении** (`push()` возвращает `false`)
+* no blocking
+* no syscalls
+* **bounded capacity = Capacity - 1**
+* potential **data loss on overflow** (`push()` returns `false`)
 
-Очередь гарантирует FIFO-доставку всех **успешно записанных элементов**.
-Потери возможны только при push()==false.
+The queue guarantees FIFO delivery of all **successfully enqueued elements**.
+Loss can happen only when `push() == false`.
 
 ---
 
 ## 1. Compile-time invariants
 
-1. `Capacity` является степенью двойки и `Capacity ≥ 2`:
+1. `Capacity` is a power of two and `Capacity >= 2`:
 
    ```
    Capacity >= 2 && (Capacity & (Capacity - 1)) == 0
    ```
 
-2. `T` удовлетворяет `std::is_trivially_copyable_v<T>`:
+2. `T` satisfies `std::is_trivially_copyable_v<T>`:
 
-   * отсутствуют скрытые аллокации
-   * отсутствуют деструкторы
-   * стоимость копирования **bounded и детерминирована**
+   * no hidden allocations
+   * no destructors
+   * copy cost is **bounded and deterministic**
 
 ---
 
 ## 2. Runtime invariants
 
-### Обозначения
+### Notation
 
-* `head` — индекс следующей позиции записи (**producer-owned**)
-* `tail` — индекс следующей позиции чтения (**consumer-owned**)
-* индексы лежат в диапазоне `[0, Capacity)`
-* обновление выполняется по маске `(Capacity − 1)`
+* `head` - index of the next write position (**producer-owned**)
+* `tail` - index of the next read position (**consumer-owned**)
+* indices are in `[0, Capacity)`
+* index updates are masked with `(Capacity - 1)`
 
-### Инварианты
+### Invariants
 
 1. **Single-writer rule**
 
-   * `head_` модифицируется только producer
-   * `tail_` модифицируется только consumer
+   * `head_` is modified only by producer
+   * `tail_` is modified only by consumer
 
 2. **Slot ownership**
 
-   * слот `buffer_[i]` записывается только producer
-   * читается только consumer
-   * корректность перехода владения обеспечивается публикацией через `head_`
+   * slot `buffer_[i]` is written only by producer
+   * slot `buffer_[i]` is read only by consumer
+   * ownership transfer correctness is provided by publication through `head_`
 
 3. **No overwrite rule**
 
-   Producer не перезаписывает непрочитанный слот:
+   Producer does not overwrite unread slots:
 
    ```
-   push() == false  ⇔  next_head == tail
+   push() == false  <=>  next_head == tail
    ```
 
 4. **No read-of-unpublished rule**
 
-   Consumer не читает неопубликованный слот:
+   Consumer does not read unpublished slots:
 
    ```
-   pop() == false  ⇔  tail == head
+   pop() == false  <=>  tail == head
    ```
 
 ### Usable capacity
 
-Максимальное число элементов в очереди:
+Maximum number of elements in the queue:
 
 ```
-Capacity − 1
+Capacity - 1
 ```
 
-Один слот всегда зарезервирован для различения **empty/full**.
+One slot is always reserved to distinguish **empty/full**.
 
 ---
 
 ## 3. Threading model requirements (preconditions)
 
-1. Ровно **один producer** и **один consumer** на экземпляр `SPSCRing`.
-2. `push()` вызывается только producer-контекстом.
-3. `pop()` вызывается только consumer-контекстом.
-4. Producer не должен быть реентерабельным (например, вложенные IRQ/NMI не должны одновременно вызывать `push()`).
-5. Нарушение условий ⇒ **undefined behavior** в рамках контракта компонента.
-6. Consumer не должен быть реентерабельным (вложенные IRQ/NMI не должны одновременно вызывать pop()).
+1. Exactly **one producer** and **one consumer** per `SPSCRing` instance.
+2. `push()` is called only from the producer context.
+3. `pop()` is called only from the consumer context.
+4. Producer must be non-reentrant (for example, nested IRQ/NMI must not call `push()` concurrently).
+5. Violating these conditions leads to **undefined behavior** within the component contract.
+6. Consumer must also be non-reentrant (nested IRQ/NMI must not call `pop()` concurrently).
+
 ---
 
 ## 4. Memory ordering / happens-before semantics
 
-### Publication rule (producer → consumer)
+### Publication rule (producer -> consumer)
 
 Producer:
- - вычисляет next_head
- - читает tail_ (acquire) и проверяет full
- - при full: возвращает false, не модифицируя состояние
- - записывает buffer_[head]
- - head_.store(next_head, release)
+- computes `next_head`
+- reads `tail_` (acquire) and checks full
+- if full: returns `false` without modifying state
+- writes `buffer_[head]`
+- `head_.store(next_head, release)`
 
 Consumer:
- - head_.load(acquire) и проверяет empty
- - читает buffer_[tail]
- - tail_.store(next_tail, release)
+- `head_.load(acquire)` and checks empty
+- reads `buffer_[tail]`
+- `tail_.store(next_tail, release)`
 
-**Гарантия:**
-если `pop()` наблюдает обновлённый `head_` (acquire),
-он **обязательно** видит соответствующую запись в `buffer_`.
+**Guarantee:**
+if `pop()` observes updated `head_` (acquire),
+it **must** observe the corresponding write to `buffer_`.
 
 ---
 
-### Consumption rule (consumer → producer)
+### Consumption rule (consumer -> producer)
 
-Consumer публикует освобождение слота:
+Consumer publishes slot release:
 
 ```
 tail_.store(next_tail, std::memory_order_release)
 ```
 
-Producer проверяет:
+Producer checks:
 
 ```
 tail_.load(std::memory_order_acquire)
 ```
 
-**Гарантия:**
-наблюдение обновлённого `tail_` означает,
-что слот безопасно переиспользовать.
+**Guarantee:**
+observing updated `tail_` means the slot is safe to reuse.
 
 ---
 
 ### Linearization points
 
-* **push** линейризуется в `head_.store(release)`
-* **pop** линейризуется в `tail_.store(release)`
+* **push** linearizes at `head_.store(release)`
+* **pop** linearizes at `tail_.store(release)`
 
-Owner-side reads of head_ and tail_ may use memory_order_relaxed,
+Owner-side reads of `head_` and `tail_` may use `memory_order_relaxed`,
 as no cross-thread synchronization is required for owned indices.
+
 ---
 
 ## 5. RT contract (producer side)
 
-`push()` удовлетворяет hard-RT требованиям:
+`push()` satisfies hard-RT requirements:
 
 ### Guarantees
 
-* **Bounded execution time**: O(1), без циклов ожидания и CAS-повторов
-* **No blocking / waiting**: нет mutex/spin/condvar
-* **No allocation**: нет dynamic allocation
+* **Bounded execution time**: O(1), no wait loops, no CAS retries
+* **No blocking / waiting**: no mutex/spin/condvar
+* **No allocation**: no dynamic allocation
 * **No syscalls / IO**
-* **Bounded failure**: при переполнении возвращает `false`
+* **Bounded failure**: returns `false` on overflow
 * **No side effects on failure**
 
 ### Explicit non-guarantees
 
-* обработка consumer’ом **не гарантируется**
-* при переполнении данные **могут быть потеряны**
+* consumer processing is **not guaranteed**
+* data **may be lost** on overflow
 
-push() is wait-free for the producer under the single-producer precondition.
+`push()` is wait-free for the producer under the single-producer precondition.
+
 ---
 
 ## 6. Non-RT contract (consumer side)
 
 `pop()`:
 * wait-free try-pop O(1)
-* операция всегда завершается за фиксированное число шагов;
-* успешность зависит от наличия данных.
-* может использоваться в RT, но **не позиционируется** как hard-RT API
-  из-за возможной последующей non-RT обработки данных.
+* each call always finishes in a bounded number of steps
+* success depends on data availability
+* can be used in RT, but is **not positioned** as hard-RT API
+  due to possible downstream non-RT data processing
 
 ---
 
 ## 7. Telemetry APIs
 
-`empty()` и `full()`:
+`empty()` and `full()`:
 
 * **empty()/full() may use relaxed memory reads and do not establish happens-before edges. It is forbidden to use their return values for synchronization or safety decisions about publication/consumption.**
 * **Telemetry only; not for synchronization**
 
-Могут возвращать устаревшие значения:
+They may return stale values:
 
-* `empty()` может быть `true`, когда элемент уже опубликован
-* `full()` может быть `false`, когда очередь уже заполнена
+* `empty()` may be `true` when an element has already been published
+* `full()` may be `false` when the queue is already full
 
-empty()/full() могут использовать relaxed-чтения и не образуют happens-before; запрещено использовать их для синхронизации или принятия решений о безопасности публикации.
+`empty()/full()` may use relaxed reads and do not form happens-before; they must not be used for synchronization or publication-safety decisions.
+
 ---
 
 ## 8. Cache / layout invariants
 
-Цель — **снижение jitter**, не корректность.
+Goal: **jitter reduction**, not correctness.
 
-1. `head_` и `tail_` размещены на отдельных cache-line
+1. `head_` and `tail_` are placed on separate cache lines
    (`alignas(SYS_CACHELINE_BYTES)`)
 
-2. Между control-полями и `buffer_` есть:
+2. There is padding between control fields and `buffer_`:
 
 ```
 pad[SYS_CACHELINE_BYTES]
 ```
 
-→ разделение **control / data**
+-> separation of **control / data**
 
-3. `buffer_` выровнен по cache-line
-   → фиксированная геометрия начала массива
+3. `buffer_` is cache-line aligned
+   -> fixed array start geometry
 
-Это **non-functional performance invariant**.
+This is a **non-functional performance invariant**.
 
-On cache-coherent architectures, the layout eliminates false sharing
+On cache-coherent architectures, this layout eliminates false sharing
 between producer-written and consumer-written cache lines.
 
 ---
 
 ## 9. Error model
 
-Единственные ошибки API:
+The only API-level failures are:
 
-* `push() == false` → очередь полна
-* `pop() == false` → очередь пуста
+* `push() == false` -> queue is full
+* `pop() == false` -> queue is empty
 
-If push() returns false, neither buffer_ nor head_ are modified.
-If pop() returns false, neither tail_ nor the output value are modified.
+If `push()` returns false, neither `buffer_` nor `head_` is modified.
+If `pop()` returns false, neither `tail_` nor the output value is modified.
 
-Гарантии:
+Guarantees:
 
-* **нет частичных записей**
-* **нет повреждения состояния**
-* **нет побочных эффектов при false**
-* **исключения отсутствуют (`noexcept`)**
+* **no partial writes**
+* **no state corruption**
+* **no side effects on false**
+* **no exceptions (`noexcept`)**
 
 ---
 
 ## 10. Extension policy (non-RT only)
 
-Расширения (например, batch-drain):
+Extensions (for example, batch-drain):
 
-* реализуются **поверх** `SPSCRing`
-* не должны изменять RT-семантику `push()`
-* не должны добавлять работу в **producer RT-path**
+* must be implemented **on top of** `SPSCRing`
+* must not alter `push()` RT semantics
+* must not add work to the **producer RT path**
 
-Базовый примитив остаётся:
+The base primitive remains:
 
-> **минимальным, формально проверяемым, RT-детерминированным.**
+> **minimal, formally verifiable, RT-deterministic.**
 
 
 ## 11. Progress guarantees
 
-Данный раздел формализует **гарантии продвижения (progress guarantees)** для операций `push()` и `pop()` в терминах классической модели неблокирующих алгоритмов.
+This section formalizes **progress guarantees** for `push()` and `pop()` using the classical non-blocking model.
 
 ### 11.1 Producer progress
 
-При соблюдении preconditions раздела 3:
+Under section 3 preconditions:
 
-* существует **ровно один producer**
-* `push()` не вызывается реентерабельно
+* there is **exactly one producer**
+* `push()` is non-reentrant
 
-операция:
+operation:
 
 ```
 push()
 ```
 
-обладает свойством:
+has property:
 
-> **wait-free для producer**
+> **wait-free for producer**
 
-Это означает:
+This means:
 
-* время выполнения **строго ограничено константой**
-* отсутствуют:
+* execution time is **strictly bounded by a constant**
+* there are no:
+  * retry loops
+  * CAS conflicts
+  * dependence on actions of other threads
+* completion is guaranteed in a **finite number of steps**,
+  regardless of consumer state (including consumer stop).
 
-  * циклы повторных попыток (retry loops)
-  * CAS-конфликты
-  * зависимость от действий других потоков
-* завершение операции гарантировано **за конечное число шагов**,
-  независимо от состояния consumer (включая его остановку).
+Consequence:
 
-Следствие:
-
-* `push()` удовлетворяет требованиям **hard real-time bounded progress**.
+* `push()` satisfies **hard real-time bounded progress**.
 
 ---
 
 ### 11.2 Consumer progress
 
-При соблюдении preconditions раздела 3:
+Under section 3 preconditions:
 
-* существует **ровно один consumer**
-* `pop()` не вызывается реентерабельно
+* there is **exactly one consumer**
+* `pop()` is non-reentrant
 
-операция:
+operation:
 
 ```
 pop()
 ```
 
-обладает свойством:
+has property:
 
-> pop() is wait-free as a try-pop operation: every call finishes in a bounded number of steps and returns either success or empty.
+> `pop()` is wait-free as a try-pop operation: every call finishes in a bounded number of steps and returns either success or empty.
 
-Это означает:
+This means:
 
-* система в целом гарантирует продвижение:
+* system-level progress is guaranteed:
+  * either the current `pop()` call finishes with success/failure,
+  * or progress happens through future `pop()` or `push()` calls
+* there is no:
+  * deadlock
+  * waiting on mutex/spinlock release
+  * dependence on OS scheduler decisions.
 
-  * либо текущий `pop()` завершается успешно/с отказом,
-  * либо продвижение обеспечивается будущими вызовами `pop()` или `push()`.
-* отсутствуют:
-
-  * взаимные блокировки
-  * ожидание освобождения mutex/spinlock
-  * зависимость от планировщика ОС.
-
-`pop()` также имеет:
+`pop()` also has:
 
 * **bounded execution time**
-* отсутствие неограниченных циклов ожидания
+* no unbounded waiting loops
 
 ---
 
 ### 11.3 System-level progress property
 
-Для системы:
+For the system:
 
 ```
 Single producer + single consumer + SPSCRing
 ```
 
-гарантируется:
+guarantee:
 
 > **The system is non-blocking: neither side waits for the other; each call completes in bounded time. If one side stops, the other continues to complete calls (possibly with false).**
 
-В частности:
+In particular:
 
-* producer никогда не блокируется действиями consumer
-* consumer никогда не блокируется действиями producer
-* остановка одной стороны:
+* producer is never blocked by consumer actions
+* consumer is never blocked by producer actions
+* stopping one side:
+  * does not hang the other side
+  * affects only **success rate**, not **termination** of operations
 
-  * не приводит к зависанию другой
-  * влияет только на **успешность**, но не на **завершимость** операций
+This property is key for:
 
-Это свойство является ключевым для:
-
-* hard-RT публикации событий
-* безопасной деградации при остановке non-RT consumer
-* построения bounded lossy-logging архитектур.
+* hard-RT event publication
+* safe degradation when the non-RT consumer stops
+* bounded lossy logging architectures.
 
 ## 12. Misuse scenarios and undefined behavior
 
-Данный раздел фиксирует **запрещённые сценарии использования**, нарушение которых выводит компонент за пределы формального контракта и приводит к **undefined behavior** на уровне модели компонента (независимо от того, проявится ли это как наблюдаемая ошибка на практике).
+This section lists **forbidden usage scenarios**. Violating them moves the component outside the formal contract and leads to **undefined behavior** in the component model (regardless of whether this becomes an observable failure in practice).
 
 ---
 
 ### 12.1 Multiple producers
 
-Использование более чем одного producer-контекста для одного экземпляра `SPSCRing` запрещено.
+Using more than one producer context for one `SPSCRing` instance is forbidden.
 
-Нарушение приводит к:
+Violation can cause:
 
-* гонке записи `head_`
-* потере элементов
-* нарушению инварианта **single-writer rule**
-* разрушению happens-before публикации
+* `head_` write races
+* element loss
+* single-writer invariant violation
+* broken publication happens-before chain
 
-Даже если записи выполняются «редко», корректность **не гарантируется**.
+Even if writes are "rare", correctness is **not guaranteed**.
 
 ---
 
 ### 12.2 Multiple consumers
 
-Использование более чем одного consumer-контекста запрещено.
+Using more than one consumer context is forbidden.
 
-Нарушение приводит к:
+Violation can cause:
 
-* гонке записи `tail_`
-* двойному чтению или потере элементов
-* нарушению линейризуемости `pop()`
+* `tail_` write races
+* duplicated reads or element loss
+* `pop()` linearizability violations
 
 ---
 
 ### 12.3 Re-entrant producer (ISR / NMI nesting)
 
-Повторный вход в `push()` из вложенных прерываний того же producer-контекста запрещён.
+Re-entering `push()` from nested interrupts of the same producer context is forbidden.
 
-Последствия:
+Consequences:
 
-* конкурентная модификация `head_`
-* частичная публикация элемента
-* потеря wait-free гарантии
+* concurrent `head_` modification
+* partial element publication
+* lost wait-free guarantee
 
-Это относится к:
+This includes:
 
-* вложенным IRQ
-* NMI поверх IRQ
-* любым формам асинхронного повторного вызова `push()`
+* nested IRQ
+* NMI over IRQ
+* any asynchronous re-entry into `push()`
 
 ---
 
 ### 12.4 Re-entrant consumer
 
-Аналогично producer, повторный вход в `pop()` запрещён.
+Same as producer: re-entering `pop()` is forbidden.
 
-Последствия:
+Consequences:
 
-* конкурентная запись `tail_`
-* потеря или дублирование элементов
-* нарушение инвариантов очереди
+* concurrent `tail_` writes
+* element loss or duplication
+* queue invariant violations
 
 ---
 
 ### 12.5 Non-trivially-copyable `T`
 
-Использование типа `T`, не удовлетворяющего `std::is_trivially_copyable_v<T>`, запрещено.
+Using a type `T` that does not satisfy `std::is_trivially_copyable_v<T>` is forbidden.
 
-Возможные последствия:
+Possible consequences:
 
-* скрытые аллокации
-* вызовы конструкторов/деструкторов
-* небounded время выполнения
-* нарушение hard-RT контракта
-* частично сконструированные объекты при гонках
+* hidden allocations
+* constructor/destructor calls
+* unbounded execution time
+* hard-RT contract violations
+* partially constructed objects under races
 
-Compile-time проверка предотвращает этот сценарий,
-но её удаление или обход выводит систему из области корректности.
+Compile-time checks prevent this scenario,
+but removing or bypassing them moves the system outside the correctness envelope.
 
 ---
 
-### 12.6 Использование `empty()` / `full()` для синхронизации
+### 12.6 Using `empty()` / `full()` for synchronization
 
-Запрещено использовать:
+Using:
 
 ```
 empty()
 full()
 ```
 
-для:
+for:
 
-* принятия решений о публикации
-* управления потоками
-* реализации протоколов синхронизации
+* publication decisions
+* thread orchestration
+* synchronization protocol logic
 
-Причина:
+is forbidden.
 
-* relaxed-чтения
-* отсутствие happens-before
-* возможные устаревшие значения в **обе стороны**
+Reason:
 
-Следствие:
+* relaxed reads
+* no happens-before
+* possible stale values in **both directions**
 
-> корректная логика должна опираться **только на `push()` / `pop()`**.
+Consequence:
+
+> correct logic must rely **only on `push()` / `pop()`**.
 
 ---
 
-### 12.7 Игнорирование результата `push()`
+### 12.7 Ignoring `push()` result
 
-Игнорирование возвращаемого значения:
+Ignoring:
 
 ```
 push() == false
 ```
 
-означает **необработанную потерю данных**.
+means **unhandled data loss**.
 
-Это допустимо только если:
+This is acceptable only if:
 
-* система спроектирована как **lossy**
-* потери явно учтены архитектурно
-* существуют метрики/сигналы деградации
+* the system is intentionally **lossy**
+* losses are explicitly accounted for in architecture
+* degradation metrics/signals exist
 
-В противном случае это является **архитектурной ошибкой уровня системы**.
-
----
-
-### 12.8 Использование после разрушения consumer
-
-Если consumer окончательно остановлен, а producer продолжает:
-
-* `push()` остаётся wait-free
-* но очередь рано или поздно станет полной
-* все последующие публикации будут теряться
-
-Это **ожидаемое bounded-loss поведение**,
-но его необходимо учитывать в shutdown-протоколах системы.
+Otherwise this is a **system-level architectural error**.
 
 ---
 
-### 12.9 Нарушение cache-coherent предположений
+### 12.8 Operation after consumer shutdown
 
-Контракт предполагает:
+If consumer is permanently stopped while producer continues:
 
-* cache-coherent память
-* корректную работу acquire/release атомиков
+* `push()` stays wait-free
+* queue eventually becomes full
+* all subsequent publications are lost
 
-Использование на:
+This is **expected bounded-loss behavior**,
+but it must be addressed in system shutdown protocols.
 
-* некогерентных DMA-областях
-* memory-mapped регионах без барьеров
-* нестандартных memory-model платформах
+---
 
-требует **дополнительной валидации** вне данного контракта.
+### 12.9 Violating cache-coherent assumptions
+
+The contract assumes:
+
+* cache-coherent memory
+* correct acquire/release atomic behavior
+
+Using this on:
+
+* non-coherent DMA regions
+* memory-mapped regions without barriers
+* non-standard memory-model platforms
+
+requires **extra validation** outside this contract.
 
 Use with DMA or non-coherent memory requires explicit cache maintenance and memory barriers outside this contract.
+
 ---
 
 ## 12.10 Summary
 
-Все перечисленные сценарии:
+All listed scenarios:
 
-* **не поддерживаются компонентом**
-* **не обязаны детектироваться**
-* выводят систему за пределы формально доказанной корректности
+* are **not supported by the component**
+* are **not required to be detected**
+* move the system outside formally proven correctness
 
-Следовательно:
+Therefore:
 
-> корректность `SPSCRing` гарантируется
-> **только при строгом соблюдении разделов 1–3 настоящего контракта.**
+> `SPSCRing` correctness is guaranteed
+> **only under strict compliance with sections 1-3 of this contract.**

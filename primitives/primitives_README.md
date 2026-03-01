@@ -1,43 +1,43 @@
 # exec/primitives
 
-Низкоуровневые RT-примитивы для межпоточной передачи данных.
+Low-level RT primitives for inter-thread data transfer.
 
-Все компоненты разработаны под жёсткие требования реального времени:
+All components are designed for strict real-time requirements:
 bounded deterministic operations, wait-free producer paths,
-без динамической памяти,
-без исключений,
-без блокировок.
+no dynamic memory,
+no exceptions,
+no locks.
 
 ---
 
-## Компоненты
+## Components
 
 ### DoubleBuffer
 
-Ping-pong снапшот-буфер (latest-wins). Передаёт последнее
-опубликованное состояние от одного писателя к одному читателю.
-`write()` всегда успешен, `read()` всегда возвращает значение.
+Ping-pong snapshot buffer (latest-wins). Transfers the latest
+published state from one writer to one reader.
+`write()` always succeeds, `read()` always returns a value.
 
-> **Примечание:** целостность снапшота гарантируется только при отсутствии
-> overlap между `read()` и `write()` во времени. Системный контракт
-> на неперекрытие — ответственность вызывающей стороны (см. контракт §4.1).
+> **Note:** snapshot integrity is guaranteed only when there is no
+time overlap between `read()` and `write()`. Enforcing non-overlap is a
+system-level contract and is the caller's responsibility (see contract §4.1).
 
-| Файл | Документация |
+| File | Documentation |
 |---|---|
-| `dbl_buffer.hpp` | [`docs/contracts/DoubleBuffer — RT Contract & Invariants.md`](../../../docs/contracts/DoubleBuffer%20—%20RT%20Contract%20&%20Invariants.md) |
+| `dbl_buffer.hpp` | [`docs/contracts/DoubleBuffer - RT Contract & Invariants.md`](../../../docs/contracts/DoubleBuffer%20—%20RT%20Contract%20&%20Invariants.md) |
 
 ---
 
 ### Mailbox2Slot
 
-SPSC снапшот-мейлбокс с семантикой latest-wins и протоколом
-claim-verify. В отличие от `DoubleBuffer`, `try_read()` может
-вернуть `false` при гонке публикации — reader остаётся на
-предыдущем (sticky) состоянии. Без retry: промах = следующий тик.
+SPSC snapshot mailbox with latest-wins semantics and a
+claim-verify protocol. Unlike `DoubleBuffer`, `try_read()` may
+return `false` during a publication race, and the reader stays on the
+previous (sticky) state. No retry: miss = next tick.
 
-| Файл | Документация |
+| File | Documentation |
 |---|---|
-| `mailbox2slot.hpp` | [`docs/contracts/Mailbox2Slot_v1.3 — RT Contract & Invariants.md`](../../../docs/contracts/Mailbox2Slot_v1.3%20—%20RT%20Contract%20&%20Invariants.md) |
+| `mailbox2slot.hpp` | [`docs/contracts/Mailbox2Slot_v1.3 - RT Contract & Invariants.md`](../../../docs/contracts/Mailbox2Slot_v1.3%20—%20RT%20Contract%20&%20Invariants.md) |
 
 ---
 
@@ -45,124 +45,124 @@ claim-verify. В отличие от `DoubleBuffer`, `try_read()` может
 
 SPSC Ring (FIFO Event Channel)
 
-Single-Producer Single-Consumer lock-free кольцевой буфер (FIFO).
+Single-Producer Single-Consumer lock-free ring buffer (FIFO).
 
 Progress guarantees
 
-Producer push() — wait-free O(1)
-Операция завершается за фиксированное число шагов без ожиданий и ретраев.
-Если очередь заполнена, push() возвращает false.
+Producer `push()` - wait-free O(1)
+The operation finishes in a bounded number of steps, with no waiting and no retries.
+If the queue is full, `push()` returns `false`.
 
-Consumer pop() — wait-free try-pop O(1)
-Операция завершается за фиксированное число шагов и возвращает true или false.
-false означает, что очередь пуста.
+Consumer `pop()` - wait-free try-pop O(1)
+The operation finishes in a bounded number of steps and returns either `true` or `false`.
+`false` means the queue is empty.
 
 Delivery semantics
 
-Все успешно записанные элементы доставляются в FIFO порядке.
+All successfully written elements are delivered in FIFO order.
 
-Запись элемента не гарантирована: если очередь заполнена, push() возвращает false.
+Writing an element is not guaranteed: if the queue is full, `push()` returns `false`.
 
-Очередь не блокирует producer и не выполняет перезапись данных.
+The queue never blocks the producer and does not overwrite data.
 
 Capacity
 
-Ёмкость должна быть степенью двойки.
-Полезная ёмкость: usable = Capacity − 1
+Capacity must be a power of two.
+Usable capacity: `usable = Capacity - 1`
 
-| Файл | Документация |
+| File | Documentation |
 |---|---|
-| `spsc_ring.hpp` | [`docs/contracts/SPSCRing — RT Contract & Invariants.md`](../../../docs/contracts/SPSCRing%20—%20RT%20Contract%20&%20Invariants.md) |
+| `spsc_ring.hpp` | [`docs/contracts/SPSCRing - RT Contract & Invariants.md`](../../../docs/contracts/SPSCRing%20—%20RT%20Contract%20&%20Invariants.md) |
 
 ---
 
 ### crc32_rt
 
-CRC32C (Castagnoli) — инкрементальный и one-shot интерфейсы.
-Таблица вычисляется на этапе компиляции (`constexpr`), runtime-инициализация
-отсутствует. Корректность алгоритма подтверждается `static_assert`
-с каноническим тест-вектором `"123456789"` → `0xE3069283`.
+CRC32C (Castagnoli) with incremental and one-shot interfaces.
+The lookup table is generated at compile time (`constexpr`),
+with no runtime initialization. Algorithm correctness is validated by a `static_assert`
+using the canonical test vector `"123456789"` -> `0xE3069283`.
 
-| Файл | Документация |
+| File | Documentation |
 |---|---|
-| `crc32_rt.hpp` | *(встроена в заголовок)* |
+| `crc32_rt.hpp` | *(embedded in header)* |
 
 ---
 
-## Сравнение семантик
+## Semantic Comparison
 
-| Примитив | Семантика | Потеря данных | Блокировка | `push`/`write` при заполнении |
+| Primitive | Semantics | Data Loss | Blocking | `push`/`write` when full |
 |---|---|---|---|---|
-| `DoubleBuffer` | Снапшот / latest-wins | Промежуточные теряются | Нет | Всегда успешен (overwrite inactive slot) |
-| `Mailbox2Slot` | Снапшот / latest-wins | Промежуточные теряются | Нет (claim-verify) | Всегда успешен (overwrite inactive slot) |
-| `SPSCRing` | Очередь / FIFO | Нет (при наличии места) | Нет | Возвращает `false` |
+| `DoubleBuffer` | Snapshot / latest-wins | Intermediate states are lost | No | Always succeeds (overwrite inactive slot) |
+| `Mailbox2Slot` | Snapshot / latest-wins | Intermediate states are lost | No (claim-verify) | Always succeeds (overwrite inactive slot) |
+| `SPSCRing` | Queue / FIFO | No (if space is available) | No | Returns `false` |
 
 ---
 
-## Общие требования ко всем примитивам
+## Common Requirements For All Primitives
 
-- Ровно **один producer** и **один consumer** (SPSC).
-- `T` должен удовлетворять `std::is_trivially_copyable_v<T> == true`.
-- Операции **не реентерабельны** (нет вложенных IRQ/NMI на том же ядре).
-- **«Ровно один producer»** означает эксклюзивность во времени на всех ядрах:
-  одновременные вызовы `write()` с разных CPU — data race и UB.
-- Нет динамической памяти, нет исключений, нет системных вызовов.
-- `std::atomic` с `is_always_lock_free == true` на целевой платформе.
+- Exactly **one producer** and **one consumer** (SPSC).
+- `T` must satisfy `std::is_trivially_copyable_v<T> == true`.
+- Operations are **non-reentrant** (no nested IRQ/NMI on the same core).
+- **"Exactly one producer"** means temporal exclusivity across all cores:
+  concurrent `write()` calls from different CPUs are a data race and UB.
+- No dynamic memory, no exceptions, no system calls.
+- `std::atomic` with `is_always_lock_free == true` on the target platform.
 
 ---
 
-## SMP и ограничения многоядерных систем
+## SMP And Multi-Core Limitations
 
 ### DoubleBuffer
 
-Целостность снапшота гарантируется только при отсутствии
-**временного overlap** между `read()` и `write()`.
-На SMP-системе, где producer и consumer работают на разных ядрах,
-этот контракт должен обеспечиваться на уровне планировщика
-или архитектуры системы — примитив сам по себе его не навязывает
-(подробнее: контракт §4.1).
+Snapshot integrity is guaranteed only when there is no
+**temporal overlap** between `read()` and `write()`.
+On SMP systems where producer and consumer run on different cores,
+this contract must be enforced by the scheduler
+or overall system architecture - the primitive itself does not enforce it
+(more details: contract §4.1).
 
 ### Mailbox2Slot
 
-Claim-verify протокол использует `sys_preemption_disable/enable` для
-защиты критических секций. Это гарантирует корректность
-**в single-core контексте** (bare-metal, RTOS с одним активным ядром).
+The claim-verify protocol uses `sys_preemption_disable/enable` to
+protect critical sections. This guarantees correctness
+**in a single-core context** (bare-metal, RTOS with one active core).
 
-> **SMP warning.** На истинных многопроцессорных системах запрет
-> вытеснения на одном ядре **не** предотвращает одновременный доступ
-> writer'а с другого ядра к тому же слоту. В этом случае torn reads
-> возможны, если только платформа не даёт гарантии когерентности
-> кэш-строк (x86-64, ARM Cortex-A с DSB/ISB) и размер `T` не превышает
-> атомарно обновляемый объём данных.
+> **SMP warning.** On true multi-processor systems, disabling
+> preemption on one core does **not** prevent simultaneous access
+> by a writer running on another core to the same slot. In this case,
+> torn reads are possible unless the platform provides cache-line
+> coherence guarantees (x86-64, ARM Cortex-A with DSB/ISB) and `sizeof(T)`
+> does not exceed the atomically coherent data granularity.
 >
-> Перед применением на SMP-платформе — убедитесь, что архитектура
-> системы исключает одновременный доступ producer и consumer
-> к одному примитиву, либо что платформенные гарантии когерентности
-> достаточны для конкретного `T`.
+> Before using this on an SMP platform, ensure that the system
+> architecture prevents simultaneous producer/consumer access
+> to the same primitive, or that platform coherence guarantees
+> are sufficient for the specific `T`.
 
 ### SPSCRing
 
-Не использует preemption guard. Корректен на SMP при соблюдении
-SPSC-контракта (ровно один producer и один consumer во времени
-на всех ядрах).
+Does not use a preemption guard. Correct on SMP as long as the
+SPSC contract is respected (exactly one producer and one consumer in time
+across all cores).
 
 ---
 
-## Структура каждого компонента
+## Component Structure
 
-Все примитивы следуют единому паттерну:
+All primitives follow the same pattern:
 
 ```
-<Name>Core<T>       — носитель разделяемого состояния (поля публичны,
-                      layout и инварианты явны и проверяемы)
-<Name>Writer<T>     — producer-view (только запись)
-<Name>Reader<T>     — consumer-view (только чтение)
-<Name><T>           — convenience wrapper (создаёт Core, выдаёт Writer/Reader)
+<Name>Core<T>       - shared-state carrier (public fields,
+                      explicit and verifiable layout/invariants)
+<Name>Writer<T>     - producer view (write-only)
+<Name>Reader<T>     - consumer view (read-only)
+<Name><T>           - convenience wrapper (creates Core, provides Writer/Reader)
 ```
 
 ---
 
-## Тесты
+## Tests
 
 ```
 tests/primitives/
@@ -172,7 +172,7 @@ tests/primitives/
     spsc_ring_test.cpp
 ```
 
-Запуск через CTest:
+Run via CTest:
 
 ```sh
 ctest -L primitives

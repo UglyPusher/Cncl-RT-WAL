@@ -106,6 +106,11 @@ struct Mailbox2SlotCore final {
     // NOTE: Core is an intentional POD-like carrier of shared state.
     // Fields are public to make layout and invariants explicit and auditable.
     // Friend declarations document intent: only Writer/Reader access Core.
+    Mailbox2SlotCore() noexcept {
+        // Default-initialized atomics hold 0; set protocol-defined sentinels.
+        pub_state.value.store(kNone, std::memory_order_relaxed);
+        lock_state.value.store(kUnlocked, std::memory_order_relaxed);
+    }
 
     friend class Mailbox2SlotWriter<T>;
     friend class Mailbox2SlotReader<T>;
@@ -307,7 +312,12 @@ private:
 template <typename T>
 class Mailbox2Slot final {
 public:
-    Mailbox2Slot() = default;
+    Mailbox2Slot() noexcept {
+        // Redundant guard: enforce protocol-defined initial state at wrapper level.
+        // Keeps behavior correct even if Core initialization path changes.
+        core_.pub_state.value.store(kNone, std::memory_order_relaxed);
+        core_.lock_state.value.store(kUnlocked, std::memory_order_relaxed);
+    }
 
     Mailbox2Slot(const Mailbox2Slot&)            = delete;
     Mailbox2Slot& operator=(const Mailbox2Slot&) = delete;
