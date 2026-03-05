@@ -1,169 +1,130 @@
-# RT-WAL Component Library
+# Separated Task Application Model (STAM)
 
-**Назначение:** библиотека RT и non-RT компонентов для embedded/industrial систем с явными контрактами (RT, safety, portability) + reference-application “brewery control” как демонстрация реального проектного мышления.
+> **Status:** active R&D · contracts-first · License: MIT
 
-Проект строится вокруг принципа:
+A C++ library of RT and non-RT components for embedded/industrial systems, built around strict domain separation and explicit contracts. Includes a *brewery control* reference application as a real-world demonstration.
 
-> **RT-домен** — bounded, deterministic, no-alloc, no syscalls, no blocking.  
-> **non-RT-домен** — персистентность, аналитика, диагностика, всё “дорогое” и потенциально непредсказуемое.
-
----
-
-## 0. Что является “готовым результатом”
-
-### MIN (репа-демо)
-1) **Separated Task Application Model (STAM)**: набор формально описанных примитивов и компонент для RT/non-RT границы.  
-2) **Brewery showcase app**: код, демонстрирующий RT-контур управления + non-RT логирование/персистентность.  
-3) **Контракты компонентов**: инварианты, misuse/UB-сценарии, progress guarantees, latency/jitter бюджеты.  
-4) **Safety contracts**: safe state, fault model, escalation/degradation FSM (WARN→LIMIT→SHED→PANIC).  
-5) **Portability layer**: конфигурация без правок исходников через макросы / user override.
-
-### MAX (железо)
-Собрать систему на референсном железе, измерить jitter/WCET/latency, продемонстрировать безопасные сценарии и деградацию.
+**Core principle:**
+- **RT domain** — bounded, deterministic, no-alloc, no syscalls, no blocking.
+- **non-RT domain** — persistence, analytics, diagnostics; everything expensive and potentially unpredictable.
 
 ---
 
-## 1. Целевые платформы
+## Target platforms
 
-- ARM Cortex-M (STM32 и др.)
-- ARM Cortex-A (embedded Linux, Raspberry Pi и др.)
-- x86/x64 (PC/industrial controllers)
+| Architecture | Examples |
+|---|---|
+| ARM Cortex-M | STM32, etc. |
+| ARM Cortex-A | embedded Linux, Raspberry Pi |
+| x86/x64 | PC / industrial controllers |
 
 ---
 
-## 2. Архитектура (жёсткое разделение доменов)
+## Repository structure
 
-### 2.1 RT Components (hard-RT path)
-- без аллокаций
-- без syscalls/IO
-- без блокировок/ожиданий
-- bounded O(1) операции
-- acquire/release строго по C++ memory model
-- явные **инварианты и misuse-сценарии**
+```
+stam/
+├── primitives/          # RT-safe lock-free primitives (SPSCRing, DoubleBuffer, …)
+│   ├── include/stam/
+│   │   ├── primitives/  # SPSCRing, DoubleBuffer, SPMCSnapshot, Mailbox2Slot, CRC32_RT
+│   │   └── sys/         # portability layer (arch, compiler, fence, preemption)
+│   └── tests/
+├── stam-rt-lib/         # RT execution model (TaskWrapper, SysRegistry)
+│   └── include/
+│       ├── exec/tasks/  # taskwrapper.hpp
+│       └── model/       # tags.hpp (concepts: Steppable, RtPayload, …)
+├── modules/             # Non-RT components (logging, …)
+├── apps/
+│   ├── brewery/         # Reference application: RT control + non-RT logging
+│   ├── demo/
+│   │   └── trivial_tasks/ # Minimal RT/non-RT interaction demo
+│   └── minimal/         # Minimal boot example
+└── docs/
+```
 
-Типовые блоки:
-- контроллеры (PID / bang-bang)
-- детерминированные FSM
-- safety line gating / watchdog hooks
-- RT publish primitives: `SPSCRing`, `DoubleBuffer`, “shadow IO”
-- RT-WAL record encode + CRC32C (без malloc)
+**Hard rule:** `primitives/` and `stam-rt-lib/` do not depend on `modules/`. The reverse is allowed.
 
-### 2.2 Non-RT Components
+---
+
+## Architecture
+
+### RT Components (hard-RT path)
+- no allocations, no syscalls/IO, no locks/waits
+- bounded O(1) operations
+- acquire/release strictly per C++ memory model
+- explicit invariants and misuse contracts per component
+
+Primitives: `SPSCRing`, `DoubleBuffer`, `SPMCSnapshot`, `Mailbox2Slot`, `CRC32_RT`
+
+### Non-RT Components
 - drain RT-ring → staging queue / in-memory WAL → sink (file/flash/uart)
 - storage durability policies (fsync/flush, batching, backpressure)
-- аналитика / диагностика / UI
-- тестовые симуляторы окружения
+- analytics / diagnostics / UI / environment simulators
 
-### 2.3 HAL (Hardware Abstraction Layer)
-Изоляция платформо-зависимого кода:
-- tick source / timers
-- GPIO/ADC/SPI/I2C/UART
-- cache maintenance (если требуется)
-- watchdog line
-- power cut / failsafe outputs
-
-RT-код зависит от HAL **по минимальному интерфейсу**, не от конкретной платформы.
+### HAL (Hardware Abstraction Layer)
+Isolates platform-specific code: tick source, GPIO/ADC/SPI/I2C/UART, cache maintenance, watchdog, failsafe outputs. RT code depends on HAL through a minimal interface only.
 
 ---
 
-## 3. Демонстрационное применение: Brewery Control (reference implementation)
+## Reference application: Brewery Control
 
-### RT-контур (пример)
-- датчики температуры (валидаторы/диагностика)
-- управление нагревателем/охладителем/насосами/клапанами
-- safety-критичные сценарии: перегрев, dry-run, отказ датчика, watchdog
-- публикация телеметрии (snapshot) + событий (lossy log) в non-RT
+**RT loop:** temperature sensors → PID/bang-bang control → heater/cooler/pump/valve actuators → telemetry snapshot + lossy event log → non-RT.
 
-### non-RT
-- логирование и персистентность
-- конфиг / калибровка
-- мониторинг, экспорт метрик
-- анализ трендов (не влияет на RT)
+**Safety scenarios covered:** overheat, dry-run, sensor failure, watchdog timeout, escalation FSM (WARN → LIMIT → SHED → PANIC).
+
+**non-RT:** logging, persistence, config/calibration, metrics export, trend analysis.
 
 ---
 
-## 4. Safety: что именно считается “индустриальным”
+## Component contracts
 
-### 4.1 Safety contract (системный)
-Документ должен фиксировать:
-- **safe state** (что значит “безопасно” для системы)
-- **fault model** (что ломается и как детектируется)
-- **escalation FSM**: WARN → LIMIT → SHED → PANIC
-- **ownership** safety lines (кто владеет сигналом и как исключается re-entrancy)
-- **watchdog strategy** (internal + external)
-- **shutdown policy** (какой порядок остановки доменов)
+Every primitive and component carries a formal contract covering:
 
-### 4.2 Degradation contract (логирование/персист)
-- какие уровни деградации существуют
-- какие события выпадают первыми
-- какие события **никогда не выпадают** (например, PANIC/SAFETY)
-- как восстанавливаемся (если разрешено) и на каких условиях
-
----
-
-## 5. Контракты компонентов (обязательная часть)
-
-Для каждого ключевого примитива/компонента:
 - Scope / semantic model
-- Compile-time invariants
-- Runtime invariants
+- Compile-time and runtime invariants
 - Threading model preconditions
-- Memory ordering (happens-before)
-- Linearization points (если применимо)
-- Progress guarantees (wait-free/bounded completion)
-- Misuse scenarios → UB модель компонента
-- RT path budget notes (если есть)
+- Memory ordering (happens-before), linearization points
+- Progress guarantees (wait-free / bounded completion)
+- Misuse scenarios and UB model
+- RT path budget notes
+
+Contract docs: [`primitives/docs/`](primitives/docs/)
 
 ---
 
-## 6. Репозиторий: структура (предварительно)
+## Safety model
 
+**Safety contract** defines: safe state, fault model, escalation FSM, ownership of safety lines (no re-entrancy), watchdog strategy (internal + external), shutdown policy.
 
-**Жёсткое правило:** `include/rt` не включает `include/nonrt`. Обратно — можно.
-
----
-
-## 7. Принципы реализации (non-negotiable)
-
-1) **RT-path:**
-   - `noexcept`
-   - no malloc/new/delete
-   - no syscalls / file IO / sockets
-   - no locks / waits / condition variables
-   - bounded time; отказ выражается return value / counters
-
-2) **Portability:**
-   - одна кодовая база, конфигурация через defines / optional override header
-   - стандартная C++ memory model как baseline
-   - CPU fences / cache maintenance — только opt-in и документировано
-
-3) **Наблюдаемость:**
-   - телеметрия — snapshot (DoubleBuffer)
-   - события — lossy queue (SPSCRing)
-   - уровень деградации — явный сигнал и метрики
+**Degradation contract** defines: which events are dropped first, which are *never* dropped (PANIC/SAFETY), and recovery conditions.
 
 ---
 
-## 8. Roadmap (ориентир, не “спринт”)
+## Implementation principles (non-negotiable)
 
-1) Core RT primitives + portability layer
-2) RT logger publish API + non-RT drain/sink pipeline
-3) Brewery RT domain skeleton (sensors→control→actuators→log)
-4) Safety + degradation contracts (docs + код)
-5) Симуляция PC/Linux + unit/property tests
-6) Порт на STM32 (MAX этап)
+**RT path:** `noexcept`, no malloc/new/delete, no syscalls/IO/sockets, no locks/waits/condvars. Failures expressed as return values or counters.
 
----
+**Portability:** single codebase; configuration via `#define` / optional override header (`user_sys_config.hpp`). CPU fences and cache maintenance are opt-in and documented.
 
-## 9. Лицензия / статус
-
-- Статус: active R&D (contracts-first).
-- Лицензия: TBD.
+**Observability:** telemetry via snapshot (`DoubleBuffer`), events via lossy queue (`SPSCRing`), degradation level as an explicit signal + metrics.
 
 ---
 
-## 10. Быстрый старт
+## Roadmap
 
-Будет добавлен после появления:
-- минимального `apps/brewery` (PC/Linux симуляция)
-- базовых тестов `tests/unit`
+- [x] Core RT primitives + portability layer
+- [ ] RT logger publish API + non-RT drain/sink pipeline
+- [ ] Brewery RT domain skeleton (sensors → control → actuators → log)
+- [ ] Safety + degradation contracts (docs + code)
+- [ ] PC/Linux simulation + unit/property tests
+- [ ] Port to STM32
+
+---
+
+## Quick start
+
+Not yet available as a single documented flow.  
+Interim entry points are:
+- `apps/minimal` for bootstrapping
+- `apps/demo/trivial_tasks` for RT/non-RT interaction
+- `apps/brewery` for the reference scenario
