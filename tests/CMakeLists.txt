@@ -1,10 +1,5 @@
-add_executable(wal_smoke
-    dispatcher_smoke.cpp
-)
+enable_testing()
 
-target_link_libraries(wal_smoke
-    PRIVATE
-        cncl_rt_wal
-)
-
-add_test(NAME wal_smoke COMMAND wal_smoke)
+#add_subdirectory(unit)
+add_subdirectory(integration)
+#add_subdirectory(primitives)

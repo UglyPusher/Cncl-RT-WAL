@@ -1,58 +1,44 @@
-cmake_minimum_required(VERSION 3.22)
+cmake_minimum_required(VERSION 3.20)
 
-project(cncl_rt_wal
-    VERSION 0.1.0
-    LANGUAGES CXX
-)
+project(CnclRTWAL LANGUAGES CXX)
 
-# ---------------------------------------------------------------------
-# Global configuration
-# ---------------------------------------------------------------------
-
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+# ---- Options ---------------------------------------------------------------
 
-# Default build type
-if (NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
+option(BUILD_MODULES    "Build optional modules" ON)
+option(BUILD_APPS       "Build example applications" ON)
+option(BUILD_TESTS      "Build tests" ON)
+
+if(BUILD_TESTS)
+    enable_testing()
 endif()
 
-# ---------------------------------------------------------------------
-# Library target
-# ---------------------------------------------------------------------
+# ---- Primitives ------------------------------------------------------------
 
-add_library(cncl_rt_wal
-    src/writer/writer.cpp
-    src/writers_dispatcher.cpp
-    src/backend/file_backend.cpp
-)
+add_subdirectory(primitives)
 
-target_include_directories(cncl_rt_wal
-    PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
+# ---- RT Framework ----------------------------------------------------------
 
-# ---------------------------------------------------------------------
-# Compile options (НЕ RT-финальные, но безопасные)
-# ---------------------------------------------------------------------
+add_subdirectory(stam-rt-lib)
 
-target_compile_options(cncl_rt_wal
-    PRIVATE
-        -Wall
-        -Wextra
-        -Wpedantic
-)
+# ---- Optional modules ------------------------------------------------------
 
-# ---------------------------------------------------------------------
-# Optional: tests
-# ---------------------------------------------------------------------
+if(BUILD_MODULES)
+    add_subdirectory(modules)
+endif()
 
-option(CNCL_RT_WAL_BUILD_TESTS "Build tests" OFF)
+# ---- Apps ------------------------------------------------------------------
 
-if (CNCL_RT_WAL_BUILD_TESTS)
-    enable_testing()
+if(BUILD_APPS)
+    add_subdirectory(apps)
+endif()
+
+# ---- Tests -----------------------------------------------------------------
+
+if(BUILD_TESTS)
     add_subdirectory(tests)
 endif()
