@@ -373,15 +373,6 @@ SignalDriven-задача может быть активирована по со
 
 ---
 
-## Замечание: расхождение с working_technology.md §8
-
-В `working_technology.md` таблица инвариантов `seal()` содержит:
-```
-| Ownership StateChannel | WriterCount == 1, ReaderCount ≥ 1 |
-```
-По решению FIXED-CHAN-005/006 правильное условие: `ReaderCount == N` (не `≥ 1`).
-`working_technology.md` требует обновления этой строки.
-
 ---
 
 *STAM Channel Technology v1*

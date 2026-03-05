@@ -5,7 +5,7 @@
 │  step()                                      │
 │  init() alarm() done()                       │
 │                                               │
-│  InPort<T> / OutPort<T>                       │
+│  InPort<T> / OutPort<T>                      │
 └───────────────────────────────────────────────┘
                      │
                      ▼
@@ -41,11 +41,11 @@
 ┌───────────────────────────────────────────────┐
 │             CHANNEL PRIMITIVES                │
 │                                               │
-│  EventChannel<T>                              │
-│      → SPSCRing<T>                            │
+│  EventChannel<T, Capacity, DropPolicy>        │
+│      → SPSCRing<T, Capacity>                  │
 │                                               │
-│  StateChannel<T,N>                            │
-│      → SPMCSnapshot<T,N>                      │
+│  StateChannel<T, N>                           │
+│      → SPMCSnapshot<T, N>                     │
 │                                               │
 │  wait-free RT операции                        │
 │  push/pop/publish/try_read                    │
@@ -63,9 +63,10 @@
 │  registry.add(channel)                        │
 │                                               │
 │  seal()                                       │
-│      → validate topology                      │
+│      → sort by priority + add-order tiebreak  │
 │      → assign task_index                      │
 │      → build signal_mask                      │
+│      → validate topology/invariants           │
 │                                               │
 │  после seal() → read-only                     │
 └───────────────────────────────────────────────┘

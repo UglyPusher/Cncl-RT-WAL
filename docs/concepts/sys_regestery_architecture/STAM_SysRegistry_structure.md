@@ -22,13 +22,13 @@
 ```
 [OPEN]  →  seal()  →  [SEALED]
   ↑                       ↑
-add/remove/bind       только чтение
-разрешены             runtime использует
+add/remove/assign_port только чтение
+разрешены               runtime использует
 ```
 
 | Состояние | Операции | Кто использует |
 |-----------|----------|----------------|
-| `OPEN` | add, remove, bind, rebind | разработчик в `init()` |
+| `OPEN` | add, remove, assign_port | разработчик в `init()` |
 | `SEALED` | read-only view | scheduler, safety-монитор, runtime |
 
 Повторный вызов `seal()` — ошибка. `init()` вызывается ровно один раз.
@@ -80,7 +80,7 @@ Ownership по типу канала:
 | Тип | writer | readers |
 |-----|--------|---------|
 | `EventChannel<T>` | ровно 1 | ровно 1 |
-| `StateChannel<T>` | ровно 1 | 1 или более |
+| `StateChannel<T, N>` | ровно 1 | ровно N (точное число, задаётся при объявлении канала) |
 
 Топологический класс (`intra-core` / `inter-core`) **выводится** из `core_id` writer и readers — не задаётся.
 
@@ -96,10 +96,10 @@ OutPort<T>  — порт записи  (writer-сторона канала)
 ```
 
 Направление является **типовой гарантией**:
-- `Channel.bind_in()` принимает только `OutPort`
-- `Channel.bind_out()` принимает только `InPort`
+- `registry.assign_port(..., writer)` принимает только `OutPort`
+- `registry.assign_port(..., reader)` принимает только `InPort`
 
-Проверка корректности bind выполняется типовой системой, остальное — при `seal()`.
+Проверка корректности `assign_port` выполняется типовой системой, остальное — при `seal()`.
 
 ---
 
@@ -118,8 +118,8 @@ registry.add(ChannelDescriptor& channel);
 registry.remove(TaskDescriptor& task);
 
 // Связывание канала с портами задач
-channel.bind_in(task.port[OUT_X]);   // writer
-channel.bind_out(task.port[IN_Y]);   // reader (повторяется)
+registry.assign_port("TASK_A", "OUT_X", channel, writer);   // writer
+registry.assign_port("TASK_B", "IN_Y", channel, reader);    // reader (повторяется)
 ```
 
 Контракт по payload-проверкам задаётся типом реестра:
@@ -167,6 +167,10 @@ signal_mask_t registry.signal_mask() const;
 
 // Маска задач на конкретном ядре
 signal_mask_t registry.core_mask(CoreId core) const;
+
+// Scheduling-примитив: установить сигнальный бит задачи (RT-безопасно)
+// Допускается вызов из step() и ISR; не является конфигурационным API
+void registry.signal(uint8_t task_index) noexcept;
 ```
 
 ---
@@ -206,7 +210,7 @@ signal_mask_t registry.core_mask(CoreId core) const;
 | Инвариант | Условие |
 |-----------|---------|
 | Ownership EventChannel | WriterCount == 1, ReaderCount == 1 |
-| Ownership StateChannel | WriterCount == 1, ReaderCount ≥ 1 |
+| Ownership StateChannel | WriterCount == 1, ReaderCount == N |
 | Типовая корректность | тип T совпадает у writer и всех readers |
 | Writer задачи существует | writer task зарегистрирована в реестре |
 | Reader задачи существуют | каждый reader task зарегистрирован в реестре |
@@ -224,8 +228,8 @@ signal_mask_t registry.core_mask(CoreId core) const;
 
 | Инвариант | Условие |
 |-----------|---------|
-| Порт существует | порт в bind_in/bind_out объявлен в TaskDescriptor |
-| Направление порта | bind_in принимает OutPort, bind_out принимает InPort |
+| Порт существует | порт в assign_port объявлен в TaskDescriptor |
+| Направление порта | assign_port(..., writer) принимает OutPort, assign_port(..., reader) принимает InPort |
 | Канал полностью связан | writer и readers назначены по правилам типа |
 | Уникальность task_name | повторный add() задачи с тем же task_name — ошибка |
 | Уникальность канала | повторный add() того же канала — ошибка |

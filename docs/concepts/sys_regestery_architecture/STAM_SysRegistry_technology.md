@@ -28,8 +28,8 @@ init()  →  seal()  →  runtime
 [ 1. Создание TaskDescriptor ]
 [ 2. Создание TaskWrapper    ]
 [ 3. Создание каналов        ]
-[ 4. Связывание через порты  ]
-[ 5. Регистрация задач+wrapper ]
+[ 4. Регистрация задач+wrapper ]
+[ 5. Связывание через порты  ]
 [ 6. Регистрация каналов     ]
 [ 7. Вызов wrapper.init()    ]
 [ 8. seal()                  ]
@@ -86,20 +86,20 @@ ch = EventChannel<T>()
 ## 5. Связывание задач и каналов через порты
 
 ```cpp
-ch.bind_in(task_a.port[OUT_PORT])    // writer — ровно один
-ch.bind_out(task_b.port[IN_PORT])    // reader — повторяется для каждого
-ch.bind_out(task_c.port[IN_PORT])    // reader 2
+registry.assign_port("TASK_A", "OUT_PORT", ch, writer)   // writer — ровно один
+registry.assign_port("TASK_B", "IN_PORT",  ch, reader)   // reader — повторяется для каждого
+registry.assign_port("TASK_C", "IN_PORT",  ch, reader)   // reader 2
 ```
 
-`bind_in` — привязка writer-стороны канала к порту задачи.
-`bind_out` — привязка reader-стороны, вызывается для каждого reader отдельно.
+`assign_port(..., writer)` — привязка writer-стороны канала к порту задачи.
+`assign_port(..., reader)` — привязка reader-стороны, вызывается для каждого reader отдельно.
 Проверка направления выполняется типовой системой порта:
-- `bind_in` принимает только `OutPort`
-- `bind_out` принимает только `InPort`
+- `assign_port(..., writer)` принимает только `OutPort`
+- `assign_port(..., reader)` принимает только `InPort`
 
 Ownership:
-- `EventChannel<T>`: ровно 1 `bind_in`, ровно 1 `bind_out`
-- `StateChannel<T>`: ровно 1 `bind_in`, 1 или более `bind_out`
+- `EventChannel<T>`: ровно 1 `assign_port(..., writer)`, ровно 1 `assign_port(..., reader)`
+- `StateChannel<T>`: ровно 1 `assign_port(..., writer)`, 1 или более `assign_port(..., reader)`
 
 ---
 
@@ -123,6 +123,10 @@ registry.add(ch_2)
 задачи с одинаковым приоритетом получат `task_index` в порядке `registry.add()`.
 Относительный порядок `add()` для задач с равным приоритетом не менять.
 Дублирование `task_name` блокируется сразу на `registry.add(...)` (по содержимому строки).
+
+**Порядок относительно `assign_port`:**
+`registry.add(task, wrapper)` должен быть вызван **до** `registry.assign_port(...)` для этой задачи,
+так как `assign_port` ищет задачу по имени в реестре.
 
 Проверка payload-контракта задаётся типом реестра:
 - RT-реестр: payload обязан удовлетворять `RtPayload`
@@ -170,7 +174,7 @@ registry.add(ch_2)
 | Инвариант | Условие |
 |-----------|---------|
 | Ownership EventChannel | WriterCount == 1, ReaderCount == 1 |
-| Ownership StateChannel | WriterCount == 1, ReaderCount ≥ 1 |
+| Ownership StateChannel | WriterCount == 1, ReaderCount == N |
 | Типовая корректность | тип T совпадает у writer и reader |
 | Writer существует | writer task объявлена в реестре |
 | Readers существуют | каждый reader task объявлен в реестре |
@@ -188,8 +192,8 @@ registry.add(ch_2)
 
 | Инвариант | Условие |
 |-----------|---------|
-| Порт существует | порт в bind_in/bind_out объявлен в Task(...) |
-| Направление порта корректно | `bind_in` использует `OutPort`, `bind_out` использует `InPort` |
+| Порт существует | порт в assign_port объявлен в Task(...) |
+| Направление порта корректно | `assign_port(..., writer)` использует `OutPort`, `assign_port(..., reader)` использует `InPort` |
 | Уникальность task_name | повторный registry.add() задачи с тем же task_name — ошибка |
 | Уникальность канала | повторный registry.add() того же канала — ошибка |
 | Канал полностью связан | канал зарегистрирован только если writer и readers заданы по правилам типа |
@@ -230,20 +234,20 @@ void init() {
     ch_pressure = StateChannel<float>()
     ch_cmd = EventChannel<Command>()
 
-    // 4. Связывание — читается как схема
-    ch_temp.bind_in(task_sensor_desc.port[OUT_TEMP])
-    ch_temp.bind_out(task_ctrl_desc.port[IN_TEMP])
-
-    ch_pressure.bind_in(task_sensor_desc.port[OUT_PRESSURE])
-    ch_pressure.bind_out(task_ctrl_desc.port[IN_PRESSURE])
-
-    ch_cmd.bind_in(task_ctrl_desc.port[OUT_CMD])
-    ch_cmd.bind_out(task_log_desc.port[IN_CMD])
-
-    // 5. Регистрация задач вместе с wrapper
+    // 4. Регистрация задач вместе с wrapper (attach_hb вызывается внутри registry.add)
     registry.add(task_sensor_desc, task_sensor_wrapper)
     registry.add(task_ctrl_desc, task_ctrl_wrapper)
     registry.add(task_log_desc, task_log_wrapper)
+
+    // 5. Связывание — читается как схема (задачи должны быть уже зарегистрированы)
+    registry.assign_port("SNSR", "OUT_TEMP", ch_temp, writer)
+    registry.assign_port("CTRL", "IN_TEMP",  ch_temp, reader)
+
+    registry.assign_port("SNSR", "OUT_PRESSURE", ch_pressure, writer)
+    registry.assign_port("CTRL", "IN_PRESSURE",  ch_pressure, reader)
+
+    registry.assign_port("CTRL", "OUT_CMD", ch_cmd, writer)
+    registry.assign_port("LOGR", "IN_CMD",  ch_cmd, reader)
 
     // 6. Регистрация каналов
     registry.add(ch_temp)
@@ -266,7 +270,7 @@ void init() {
 
 | Фаза | Состояние | Что разрешено |
 |------|-----------|---------------|
-| pre-seal | открытый, изменяемый | add, remove, rebind, bind, wrapper.init |
+| pre-seal | открытый, изменяемый | add, remove, assign_port, wrapper.init |
 | seal() | переход | сортировка → task_index → publish refs → маска → проверки → freeze |
 | post-seal | frozen, read-only | только чтение; runtime использует реестр |
 
@@ -288,7 +292,7 @@ void init() {
 ```
 1. Убедиться, что изменение не выходит за рамки v1
 2. Создать Task(...) или Channel с полным набором параметров
-3. Добавить bind_in / bind_out если создан новый канал
+3. Добавить `assign_port(...)` если создан новый канал
 4. Вызвать registry.add(...)
 5. Запустить init() + seal() — убедиться, что все инварианты зелёные
 6. Проверить registry_report: изменение соответствует ожидаемому

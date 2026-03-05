@@ -140,9 +140,6 @@ signal_bit(task) == index_of(task) в реестре
 Задача исполняется по таймеру:
 - `period_ticks ≥ 1`
 
-Допускается фиксированная фаза:
-- `phase_ticks < period_ticks`
-
 Сигнальный бит может быть установлен для дополнительного запуска вне периода.
 
 #### Signal-driven (on-demand)
@@ -202,10 +199,10 @@ Timeout задаётся явно.
 Ownership зависит от типа канала:
 ```
 EventChannel<T>:  WriterCount == 1, ReaderCount == 1
-StateChannel<T>:  WriterCount == 1, ReaderCount ≥ 1
+StateChannel<T, N>:  WriterCount == 1, ReaderCount == N
 ```
 
-Writer всегда ровно один. Это compile-time инварианты.
+Writer всегда ровно один. N — точное число reader-задач, задаётся при объявлении канала. Это compile-time инварианты.
 
 ### 6.3 Типы каналов
 
@@ -248,7 +245,7 @@ Task → Channel → Task
 ### 7.1 Ownership каналов
 ```
 EventChannel<T>:  WriterCount == 1, ReaderCount == 1
-StateChannel<T>:  WriterCount == 1, ReaderCount ≥ 1
+StateChannel<T, N>:  WriterCount == 1, ReaderCount == N
 ```
 
 ### 7.2 Типовая корректность каналов
@@ -265,7 +262,6 @@ CoreId < NUM_CORES
 ### 7.4 Параметры Periodic задач
 ```
 period_ticks ≥ 1
-phase_ticks < period_ticks
 ```
 
 ### 7.5 Timeout корректен
@@ -310,7 +306,6 @@ task_count <= SIGNAL_MASK_WIDTH
 Реестр использует только ticks:
 - `period_ticks`
 - `timeout_ticks`
-- `phase_ticks`
 
 Реестр **не использует**:
 - milliseconds
