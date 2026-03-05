@@ -251,7 +251,7 @@ All primitives follow the same pattern:
 ## Tests
 
 ```
-tests/primitives/
+primitives/tests/
     crc32_rt_test.cpp
     dbl_buffer_test.cpp
     mailbox2slot_test.cpp
