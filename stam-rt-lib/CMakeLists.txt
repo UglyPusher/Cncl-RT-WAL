@@ -24,3 +24,11 @@ target_link_libraries(stam_exec INTERFACE stam_model stam_primitives)
 if(BUILD_RTR)
     add_subdirectory(rtr)
 endif()
+
+# ---- Tests -----------------------------------------------------------------
+
+option(BUILD_EXEC_TESTS "Build exec layer tests (stam_exec_tests)" ON)
+
+if(BUILD_EXEC_TESTS)
+    add_subdirectory(tests/exec)
+endif()

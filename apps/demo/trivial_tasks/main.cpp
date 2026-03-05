@@ -15,8 +15,10 @@ int main()
     std::atomic<uint32_t> hb_rt{0};
     std::atomic<uint32_t> hb_nrt{0};
 
-    exec::tasks::TaskWrapper w_rt{rt, hb_rt};
-    exec::tasks::TaskWrapper w_nrt{nrt, hb_nrt};
+    exec::tasks::TaskWrapper<modules::demo::trivial_rt_task>    w_rt{rt};
+    exec::tasks::TaskWrapper<modules::demo::trivial_nonrt_task> w_nrt{nrt};
+    w_rt.attach_hb(&hb_rt);
+    w_nrt.attach_hb(&hb_nrt);
 
     for (uint32_t i = 0; i < 5; ++i)
     {
