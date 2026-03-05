@@ -1737,6 +1737,47 @@ concept SnapshotReader = requires(R r, T& out) {
 
 Переходим к шагу "Стресс-тесты для каждого нового примитива.". Клод, это твоя реализация.
 
+[Сессия 0067][Кодекс]
+Проверил, что Клод успел по тестам, и закрыл недоделанные части.
+
+Что было незавершено:
+1. `dbl_buffer_seqlock_test.cpp` и `mailbox2slot_smp_test.cpp` уже существовали, но не были подключены в `stam_tests`.
+2. Для третьего нового SMP-примитива отсутствовал тест-файл (`SPMCSnapshotSmp`).
+3. `primitives/tests/main.cpp` не вызывал новые тестовые наборы.
+
+Что доделано:
+1. `primitives/tests/CMakeLists.txt`
+   - добавлены в сборку:
+     - `dbl_buffer_seqlock_test.cpp`
+     - `mailbox2slot_smp_test.cpp`
+     - `spmc_snapshot_smp_test.cpp` (новый файл)
+
+2. `primitives/tests/main.cpp`
+   - добавлены объявления и вызовы:
+     - `dbl_buffer_seqlock_tests()`
+     - `mailbox2slot_smp_tests()`
+     - `spmc_snapshot_smp_tests()`
+
+3. Добавлен новый файл:
+   - `primitives/tests/spmc_snapshot_smp_test.cpp`
+   - содержит функциональные и stress-тесты:
+     - концепты `SnapshotWriter/SnapshotReader`
+     - `try_read` до первой публикации
+     - alias `write()`
+     - cleanup `busy_mask/refcnt`
+     - stress N=1, N=2 (no torn-read), sustained N=4 с проверкой cleanup
+
+Проверка:
+- `cmake --build /tmp/build -j4` — успешно.
+- запуск `/tmp/build/primitives/tests/stam_tests` — успешно.
+- все наборы тестов проходят, включая новые:
+  - `DoubleBufferSeqLock`: 20/20 PASS
+  - `Mailbox2SlotSmp`: 22/22 PASS
+  - `SPMCSnapshotSmp`: 7/7 PASS
+
+Итог:
+- Шаг "стресс-тесты для каждого нового примитива" завершён полностью.
+
 [Сессия 0066][Кодекс]
 Проверил, что было сделано Клодом по стресс-тестам, и дополнил недостающее.
 
