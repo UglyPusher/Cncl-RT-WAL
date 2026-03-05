@@ -8,6 +8,13 @@ no dynamic memory,
 no exceptions,
 no locks.
 
+Snapshot API unification (v1):
+- canonical write path: `write(const T&)`
+- canonical read path: `try_read(T&) -> bool`
+- legacy aliases (`publish()`, `read()`) remain for backward compatibility.
+- generic snapshot concepts: `SnapshotWriter<W, T>`, `SnapshotReader<R, T>`
+  in `include/stam/primitives/snapshot_concepts.hpp`.
+
 ---
 
 ## Components
@@ -28,6 +35,18 @@ system-level contract and is the caller's responsibility (see contract §4.1).
 
 ---
 
+### DoubleBufferSeqLock
+
+SPSC snapshot buffer (latest-wins), SMP-safe. SeqLock variant of `DoubleBuffer`.
+`write()` always succeeds (wait-free). `read()` retries until a stable snapshot is
+obtained (lock-free). Before the first `write()`, `read()` returns zero-initialized T.
+
+| File | Documentation |
+|---|---|
+| `dbl_buffer_seqlock.hpp` | [`docs/DoubleBufferSeqLock - RT Contract & Invariants.md`](docs/DoubleBufferSeqLock%20-%20RT%20Contract%20%26%20Invariants.md) |
+
+---
+
 ### Mailbox2Slot
 
 SPSC snapshot mailbox with latest-wins semantics and a
@@ -38,6 +57,50 @@ previous (sticky) state. No retry: miss = next tick.
 | File | Documentation |
 |---|---|
 | `mailbox2slot.hpp` | [`docs/contracts/Mailbox2Slot_v1.3 - RT Contract & Invariants.md`](../../../docs/contracts/Mailbox2Slot_v1.3%20—%20RT%20Contract%20&%20Invariants.md) |
+
+---
+
+### Mailbox2SlotSmp
+
+SPSC snapshot mailbox (latest-wins), SMP-safe. Uses 2 slots + per-slot sequence counters.
+`try_read()` returns `false` if no data yet or a concurrent write is detected (single-shot).
+Writer must complete 2 full publish cycles to cause a reader collision — low false-return
+rate in RT polling loops.
+
+| File | Documentation |
+|---|---|
+| `mailbox2slot_smp.hpp` | [`docs/Mailbox2SlotSmp - RT Contract & Invariants.md`](docs/Mailbox2SlotSmp%20-%20RT%20Contract%20%26%20Invariants.md) |
+
+---
+
+### SPMCSnapshot
+
+SPMC snapshot channel (latest-wins, wait-free). Transfers the latest
+published state from one writer to up to N concurrent readers.
+`try_read()` returns `false` only before the first `publish()`;
+after that always returns `true`.
+
+> **UP-only / Condition B SMP.** `try_read()` uses `sys_preemption_disable/enable`
+> to protect the load-published → set-busy_mask window. This is correct on a
+> single core and on SMP where the scheduler guarantees temporal separation
+> (writer finishes publishing before readers start a new tick). For general SMP
+> use `SPMCSnapshotSmp`.
+
+| File | Documentation |
+|---|---|
+| `spmc_snapshot.hpp` | [`docs/SPMCSnapshot — RT Contract & Invariants.md`](../docs/SPMCSnapshot%20—%20RT%20Contract%20%26%20Invariants.md) |
+
+---
+
+### SPMCSnapshotSmp
+
+SPMC snapshot channel (latest-wins), SMP-safe. Uses `fetch_or + re-verify + refcnt`
+protocol instead of `preemption_disable`. `try_read()` is wait-free per invocation;
+returns `false` before first publish or when publication changed during claim.
+
+| File | Documentation |
+|---|---|
+| `spmc_snapshot_smp.hpp` | [`docs/SPMCSnapshotSmp - RT Contract & Invariants.md`](docs/SPMCSnapshotSmp%20-%20RT%20Contract%20%26%20Invariants.md) |
 
 ---
 
@@ -94,57 +157,80 @@ using the canonical test vector `"123456789"` -> `0xE3069283`.
 | Primitive | Semantics | Data Loss | Blocking | `push`/`write` when full |
 |---|---|---|---|---|
 | `DoubleBuffer` | Snapshot / latest-wins | Intermediate states are lost | No | Always succeeds (overwrite inactive slot) |
+| `DoubleBufferSeqLock` | Snapshot / latest-wins | Intermediate states are lost | No (read retries) | Always succeeds |
 | `Mailbox2Slot` | Snapshot / latest-wins | Intermediate states are lost | No (claim-verify) | Always succeeds (overwrite inactive slot) |
+| `Mailbox2SlotSmp` | Snapshot / latest-wins | Intermediate states are lost | No (single-shot) | Always succeeds |
+| `SPMCSnapshot` | Snapshot / latest-wins | Intermediate states are lost | No | Always succeeds |
+| `SPMCSnapshotSmp` | Snapshot / latest-wins | Intermediate states are lost | No (single-shot) | Always succeeds |
 | `SPSCRing` | Queue / FIFO | No (if space is available) | No | Returns `false` |
+
+---
+
+## SMP Safety Matrix
+
+| Primitive | UP-safe | SMP-safe | Notes |
+|---|---|---|---|
+| `DoubleBuffer` | ✓ | ✗ | Uses `preemption_disable`; SMP variant: `DoubleBufferSeqLock` |
+| `DoubleBufferSeqLock` | ✓ | ✓ | SeqLock; writer wait-free, reader lock-free |
+| `Mailbox2Slot` | ✓ | ✗ | Uses `preemption_disable`; SMP variant: `Mailbox2SlotSmp` |
+| `Mailbox2SlotSmp` | ✓ | ✓ | 2-slot + per-slot seq; writer wait-free, reader wait-free per invocation |
+| `SPMCSnapshot` | ✓ | ✗ / cond. | UP + Condition B SMP only; general SMP variant: `SPMCSnapshotSmp` |
+| `SPMCSnapshotSmp` | ✓ | ✓ | fetch_or + refcnt protocol; both sides wait-free per invocation |
+| `SPSCRing` | ✓ | ✓ | Uses `acquire`/`release` atomics; no preemption guard needed |
 
 ---
 
 ## Common Requirements For All Primitives
 
-- Exactly **one producer** and **one consumer** (SPSC).
+- Roles are fixed by API: producer side writes, consumer side reads.
 - `T` must satisfy `std::is_trivially_copyable_v<T> == true`.
-- Operations are **non-reentrant** (no nested IRQ/NMI on the same core).
-- **"Exactly one producer"** means temporal exclusivity across all cores:
-  concurrent `write()` calls from different CPUs are a data race and UB.
+- Operations are **non-reentrant** on one role instance (no nested IRQ/NMI on the same role).
+- **Single producer** means temporal exclusivity across all cores:
+  concurrent producer calls from different CPUs are a data race and UB.
 - No dynamic memory, no exceptions, no system calls.
-- `std::atomic` with `is_always_lock_free == true` on the target platform.
+- All atomics used in the primitive must be lock-free on the target platform.
+
+### Topology-Specific Requirements
+
+- **SPSC primitives** (`DoubleBuffer`, `DoubleBufferSeqLock`, `Mailbox2Slot`, `Mailbox2SlotSmp`, `SPSCRing`):
+  exactly one producer and exactly one consumer.
+- **SPMC primitives** (`SPMCSnapshot`, `SPMCSnapshotSmp`):
+  exactly one producer and up to `N` concurrent consumers (as defined by the template parameter).
 
 ---
 
 ## SMP And Multi-Core Limitations
 
-### DoubleBuffer
+### DoubleBuffer — UP-only
 
-Snapshot integrity is guaranteed only when there is no
-**temporal overlap** between `read()` and `write()`.
-On SMP systems where producer and consumer run on different cores,
-this contract must be enforced by the scheduler
-or overall system architecture - the primitive itself does not enforce it
-(more details: contract §4.1).
+Uses no explicit locking. Snapshot integrity is guaranteed only when there is no
+**temporal overlap** between `read()` and `write()`. On SMP, the producer on one
+core can recycle the slot being copied by the consumer on another core.
+**Use `DoubleBufferSeqLock` for SMP.**
 
-### Mailbox2Slot
+### Mailbox2Slot — UP-only
 
-The claim-verify protocol uses `sys_preemption_disable/enable` to
-protect critical sections. This guarantees correctness
-**in a single-core context** (bare-metal, RTOS with one active core).
+The claim-verify protocol uses `sys_preemption_disable/enable` to protect
+critical sections. Correct **on a single core only** (bare-metal, RTOS with
+one active core). On SMP, disabling preemption on the reader's core does not
+prevent the writer (on another core) from observing a stale `lock_state` and
+writing to the slot the reader is about to claim.
+**Use `Mailbox2SlotSmp` for SMP.**
 
-> **SMP warning.** On true multi-processor systems, disabling
-> preemption on one core does **not** prevent simultaneous access
-> by a writer running on another core to the same slot. In this case,
-> torn reads are possible unless the platform provides cache-line
-> coherence guarantees (x86-64, ARM Cortex-A with DSB/ISB) and `sizeof(T)`
-> does not exceed the atomically coherent data granularity.
->
-> Before using this on an SMP platform, ensure that the system
-> architecture prevents simultaneous producer/consumer access
-> to the same primitive, or that platform coherence guarantees
-> are sufficient for the specific `T`.
+### SPMCSnapshot — UP-only / Condition B SMP
 
-### SPSCRing
+Uses `sys_preemption_disable/enable` to protect the
+load-published → set-busy_mask window. Correct on a single core (Condition A)
+and on SMP where the scheduler guarantees temporal separation between
+writer and readers (Condition B). Without Condition B, physical parallelism
+between cores creates a torn-read race.
+**Use `SPMCSnapshotSmp` for general SMP.**
 
-Does not use a preemption guard. Correct on SMP as long as the
-SPSC contract is respected (exactly one producer and one consumer in time
-across all cores).
+### SPSCRing — SMP-safe
+
+Does not use a preemption guard. Uses `memory_order_acquire/release` on
+`head_` and `tail_`. Correct on SMP as long as the SPSC contract is respected
+(exactly one producer and one consumer across all cores).
 
 ---
 

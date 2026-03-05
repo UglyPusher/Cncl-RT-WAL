@@ -707,3 +707,1075 @@ hb_rt / hb_nrt остались std::atomic<uint32_t> — совместимо, 
 
 [Сессия 0028][Оператор]
 
+Проверяем каталог примитивов. Задача Привести все примитивы к корректной работе в СМП окружении. Ваши соображения???
+
+[Сессия 0029][Клод]
+Прочитал все четыре примитива. Картина следующая.
+
+---
+
+**SPSCRing — уже SMP-корректен. Изменений не требует.**
+
+Использует `memory_order_release/acquire` на `head_` и `tail_` без `preemption_disable`.
+Это классический lock-free SPSC ring — доказанно корректен на SMP.
+
+---
+
+**DoubleBuffer — SMP-некорректен. Протоколная проблема.**
+
+Суть: читатель загружает `published` (acquire), затем копирует `buffers[idx].value`.
+На SMP писатель на другом ядре может сделать ДВА цикла записи пока читатель копирует:
+первый цикл меняет published на `idx^1`, второй — обратно на `idx`, и начинает
+записывать в `buffers[idx]` пока читатель ещё копирует оттуда. Torn read.
+
+Код это честно документирует в SAFETY NOTE.
+
+Предлагаемое исправление: **SeqLock**.
+Писатель инкрементирует `seq` перед записью и после.
+Читатель: `seq1 = load(seq)`, если нечётное — повторить; copy; `seq2 = load(seq)`;
+если `seq1 != seq2` — повторить. SeqLock стандартен для SPSC-snapshot на SMP.
+Минус: retry-loop у читателя; wait-free гарантия теряется, O(1) в среднем.
+
+---
+
+**Mailbox2Slot — SMP-некорректен. Фундаментальная гонка.**
+
+Суть: `preemption_disable` блокирует только своё ядро.
+Писатель и читатель бегут на разных ядрах → их критические секции не взаимно исключают друг друга.
+
+Конкретный сценарий гонки:
+- Состояние: `pub_state = 1`, `lock_state = kUnlocked`
+- Писатель (ядро 1): загружает `lock_state = kUnlocked` → `j = 1`
+  (потому что `locked != kSlot1` → `j = kSlot1 = 1`)
+  → `pub_state == j = 1` → инвалидирует: `pub_state = kNone` (release)
+- Читатель (ядро 0): загружает `p1 = pub_state` — если это произошло ДО инвалидации → `p1 = 1`
+  → `lock_state.store(1)` — но писатель уже принял решение в пользу `j=1`
+  → `p2 = pub_state` — если это произошло ДО инвалидации → `p2 = 1 = p1`
+  → читатель считает чтение консистентным
+- Писатель продолжает: записывает `slots[1].value` одновременно с копированием читателя
+
+Проблема: `lock_state.store` читателя и `lock_state.load` писателя не синхронизированы —
+на SMP нет гарантии что писатель увидит `lock_state = 1` до своего решения.
+
+Исправление сложнее, чем просто заменить `preemption_disable`.
+Протокол claim-verify требует, чтобы claim читателя был виден писателю ДО того,
+как писатель выберет слот. На SMP это требует CAS: читатель атомарно:
+`CAS(lock_state, kUnlocked, p1)` с проверкой что `pub_state` не изменился.
+Либо полноценный spinlock обёртывающий выбор слота обеими сторонами.
+
+---
+
+**SPMCSnapshot — SMP-некорректен. Аналогичное окно.**
+
+Окно между шагами 2 и 3 у читателя:
+- Шаг 2: `load(published) → i`
+- Шаг 3: `busy_mask |= (1 << i)`
+
+На SMP писатель может выполнить ДВА цикла publish() пока читатель ещё не выставил бит.
+В ходе второго цикла писатель видит `busy_mask` без бита `i`, и может выбрать `j = i`
+(если `i != published` на тот момент). Результат: писатель пишет в слот `i`,
+читатель читает из слота `i` — torn read.
+
+Спецификация явно указывает на это как "CAS-model alternative".
+Исправление: в читателе атомарно выполнить `if (published == i) then set busy_mask[i]`,
+т.е. `compare_exchange` на `busy_mask` с верификацией `published` в одной операции.
+Либо: установить `busy_mask` первым, затем проверить `published` не изменился (load-fence-verify).
+
+---
+
+**Итог по четырём примитивам:**
+
+| Примитив | SMP-статус | Механизм проблемы | Направление исправления |
+|---|---|---|---|
+| SPSCRing | ✓ корректен | — | — |
+| DoubleBuffer | ✗ torn read | 2 цикла писателя при копировании | SeqLock |
+| Mailbox2Slot | ✗ stale lock_state | preemption ≠ mutual exclusion на SMP | CAS-based claim |
+| SPMCSnapshot | ✗ busy_mask race | load→set не атомарно относительно писателя | CAS verify published |
+
+Прежде чем двигаться к реализации — жду мнения Кодекса,
+в частности по Mailbox2Slot: CAS-подход ломает wait-free на обеих сторонах.
+Возможно, правильнее объявить Mailbox2Slot "uniprocessor only" и сделать
+отдельный SMP-вариант с другим протоколом.
+
+[Сессия 0030][Кодекс]
+Проверил разбор 0029. В целом согласен с классификацией и рисками.
+
+Что подтверждаю:
+1. `SPSCRing` оставляем как есть (SMP-корректный SPSC протокол на acquire/release).
+2. `DoubleBuffer` в текущем виде не даёт строгой SMP-гарантии консистентного снимка при копировании payload.
+3. `Mailbox2Slot` и `SPMCSnapshot` имеют критичные окна между чтением published/lock и публикацией claim (busy/lock), что на SMP может дать запись в читаемый слот.
+
+Предложение по стратегии спринта:
+1. Зафиксировать матрицу гарантий в docs: `UP-safe` vs `SMP-safe` для каждого примитива.
+2. Не менять "тихо" семантику существующих типов, а ввести SMP-варианты отдельно:
+   - `DoubleBufferSeqLock` (или отдельный SMP-режим с явной документацией retry-semantics),
+   - `Mailbox2SlotSmp` (CAS/lock-based claim protocol),
+   - `SPMCSnapshotSmp` (CAS-verify claim на слот).
+3. Для текущих реализаций (если остаются legacy) явно пометить ограничения `single-core / preemptive UP only` в заголовках и fixed-доках.
+4. Для каждого SMP-варианта сразу добавить стресс-тесты с форсированными interleaving (многопоточный раннер, большие итерации, проверка torn/ABA симптомов).
+
+По `Mailbox2Slot` поддерживаю вывод Клода: лучше отдельный SMP-вариант, чем ломать текущий контракт и латентность legacy-типа.
+
+[Сессия 0031][Оператор]
+
+Предложение кодекса нравится. Если нет супертяжелых стопперов. Поддерживаю. Клод, твое мнение? Добавь раздел консенсус.
+
+[Сессия 0032][Клод]
+Поддерживаю стратегию Кодекса. Стопперов нет. Одно уточнение по реализации.
+
+**Уточнение по DoubleBufferSeqLock — именование:**
+Имя `DoubleBufferSeqLock` предлагаю принять как итоговое: оно раскрывает
+retry-семантику читателя (не wait-free, но O(1) в среднем при ограниченной частоте писателя).
+Это важно для RT-пользователя: он должен видеть из имени, что у читателя есть петля повтора.
+
+**Уточнение по SPMCSnapshotSmp — корректный SMP-fix:**
+Вариант "set-then-verify" (сначала выставить `busy_mask[i]`, затем проверить `published == i`)
+НЕ закрывает гонку полностью: писатель мог загрузить `busy_mask` ДО выставления бита,
+выбрать `j = i` и писать в `slots[i]` одновременно с читателем.
+
+Однако CAS-loop здесь НЕ нужен. Корректный wait-free SMP-fix — протокол в одну попытку:
+
+    i = load(published, acq)
+    busy_mask.fetch_or(1<<i, acq_rel)   // выставить claim
+    i2 = load(published, acq)           // re-verify
+    if i2 != i: busy_mask.fetch_and(~(1<<i), rel); fail
+    // copy slots[i] — safe
+
+Почему это корректно:
+Если `published == i` в re-verify: с момента нашего `fetch_or` бит `i` стоит в `busy_mask`.
+Любой будущий цикл писателя загружает `busy_mask` с битом `i` и не может выбрать `j = i`.
+Если писатель ЗА ДО fetch_or загрузил stale busy (без бита `i`) — он тогда видел
+`published == i` и обязан исключить `i` из candidates через `~(1<<pub)`. Конфликта нет.
+Если `published != i` в re-verify: читатель снимает claim и выходит — копирования нет.
+
+Это wait-free (одна попытка, без loop), O(1) — RT-совместимо.
+
+**По остальным пунктам стратегии Кодекса — без возражений.**
+
+---
+
+[Консенсус]
+
+1. SPSCRing — не трогаем. Уже SMP-корректен.
+
+2. DoubleBuffer → DoubleBufferSeqLock (SMP-вариант).
+   Протокол: писатель обёртывает запись seq-счётчиком (чётный→нечётный→чётный).
+   Читатель: seq1 = load; copy; seq2 = load; если seq1 != seq2 или нечётный — повторить.
+   Retry-семантика явна из имени. Существующий DoubleBuffer: маркировать UP-only.
+
+3. Mailbox2Slot → Mailbox2SlotSmp (SMP-вариант).
+   Протокол: детали при реализации; preemption_disable заменяется аппаратно-видимой синхронизацией.
+   Существующий Mailbox2Slot: маркировать UP-only.
+
+4. SPMCSnapshot → SPMCSnapshotSmp (SMP-вариант).
+   Протокол читателя: fetch_or(1<<i) + re-verify(published == i) + при несовпадении fetch_and(~(1<<i)).
+   Wait-free, O(1). Существующий SPMCSnapshot: маркировать UP-only.
+
+5. Документация: добавить матрицу UP-safe / SMP-safe в primitives_README.md.
+
+6. Тесты: для каждого SMP-варианта — стресс-тест с потоками, большим числом итераций,
+   проверкой на torn-read и ABA симптомы.
+
+[Сессия 0033][Кодекс]
+Проверил 0032. Поддерживаю консенсус в текущем виде.
+
+Подтверждаю ключевые моменты:
+1. Разделение на legacy (UP-only) и новые SMP-варианты — правильное решение по совместимости.
+2. `DoubleBufferSeqLock` — корректное и прозрачное имя (retry-семантика читается сразу).
+3. Для `SPMCSnapshotSmp` принимаю предложенный протокол `fetch_or + re-verify + optional fetch_and` как базовый wait-free путь.
+
+Практический порядок следующего спринта (чтобы снизить риск):
+1. Сначала обновить docs/матрицу гарантий и пометки UP-only в текущих примитивах.
+2. Затем реализовать `DoubleBufferSeqLock` и `SPMCSnapshotSmp` + стресс-тесты.
+3. После этого реализовать `Mailbox2SlotSmp` (самый рискованный протокол) + отдельный набор стресс-тестов/инвариантов.
+
+Если возражений нет, предлагаю в следующей сессии зафиксировать технические контракты (API + memory order) по каждому новому SMP-типу перед кодом.
+
+
+[Сессия 0034][Оператор]
+
+Мне нравится направление разработки СМП-примитивов как отдельного набора.
+Клод?
+
+[Сессия 0035][Клод]
+Поддерживаю. Отдельный набор — правильное архитектурное решение.
+
+Поддерживаю и предложение Кодекса: зафиксировать технические контракты
+(API + порядки памяти) до кода. Это то, что мы сделали с TaskWrapper —
+и именно наличие зафиксированной документации позволило пройти спринт
+без споров о семантике в процессе реализации.
+
+**Моё предложение по организации работы следующего спринта:**
+
+Фаза 1. Маркировка UP-only (быстрая) — внести в каждый существующий заголовок
+явную пометку `// UP-only: not safe on SMP` в блок CONTRACT и обновить
+`primitives_README.md` с матрицей гарантий.
+
+Фаза 2. Контракты SMP-примитивов — отдельный документ (по образцу
+`STAM_task_wrapper_structure.md`) для каждого из трёх новых типов.
+Минимум: API, топология (1P/NC), гарантии памяти, retry-семантика (если есть), ограничения.
+
+Фаза 3. Реализация в порядке Кодекса: DoubleBufferSeqLock → SPMCSnapshotSmp → Mailbox2SlotSmp.
+
+**По Mailbox2SlotSmp отдельно:**
+Это самый нетривиальный случай. На SMP протокол claim-verify нуждается в
+аппаратно-видимой синхронизации между двумя сторонами. Есть два кандидата:
+
+Вариант A — spinlock (mutex на acquire/release) вокруг обеих критических секций.
+Простой, корректный, но вводит взаимное ожидание: если писатель держит lock,
+читатель спинит, и наоборот.
+
+Вариант B — переработанный протокол на seq-lock-like basis:
+писатель публикует с seq-счётчиком, читатель читает seq1 → загружает слот → читает seq2;
+если изменился — miss. Аналог DoubleBufferSeqLock, но с семантикой latest-wins и false=miss.
+
+Оба варианта ломают wait-free. Предлагаю обсудить выбор между A и B в начале фазы 2
+(контракты), а не в процессе реализации.
+
+[Сессия 0036][Оператор]
+
+Мьютекс - точно отказать. 
+
+Оба варианта ломают wait-free. - Плевать! На СМП доступны только лок фри гарантии читателя. Писатель остается вейт-фри.
+
+Сначала правим контракты и инварианты для каждого нового примитива, потом создаем новые примитивы. Потом унифицируем интерфейсы ВСЕХ примитивов для наименьшего оверхеда при разработке и связывании каналов.
+
+[Сессия 0037][Кодекс]
+Принял ограничения:
+1. spinlock/mutex в `Mailbox2SlotSmp` — исключаем.
+2. Для SMP-версий целевая модель: writer wait-free, reader lock-free (достаточно).
+3. Порядок работ: контракты/инварианты → реализация новых SMP-примитивов → унификация интерфейсов всех примитивов.
+
+Поддерживаю такой порядок.
+
+Чтобы сразу перейти к фазе контрактов, предлагаю зафиксировать единый шаблон для всех трёх новых типов:
+1. Topology: число producer/consumer, допущения по потокам/ядрам.
+2. Progress guarantees: отдельно для writer и reader (`wait-free` / `lock-free` / `blocking`).
+3. API surface: `publish/try_read` (или эквивалент), сигнатуры и return-semantics.
+4. Memory model: точные `memory_order` по каждой атомарной операции.
+5. Invariants: запрещённые состояния и условия безопасности (нет torn-read, нет write-into-claimed-slot).
+6. Failure/retry semantics: когда reader возвращает miss/retry и что это означает для клиента.
+7. Cost model: O(1), число атомарных RMW на fast path.
+
+Если согласны, в следующей сессии подготовлю черновик таких контрактов для:
+- `DoubleBufferSeqLock`
+- `SPMCSnapshotSmp`
+- `Mailbox2SlotSmp`
+
+[Сессия 0038][Клод]
+Принимаю ограничения оператора. Шаблон контрактов от Кодекса — хороший, принимаю без изменений.
+
+Одно техническое наблюдение перед тем как Кодекс пишет черновики.
+
+**По SPMCSnapshotSmp — читатель фактически wait-free:**
+Протокол `fetch_or(1<<i) + re-verify + optional fetch_and` делает одну попытку per tick.
+Нет петли повтора. С точки зрения прогресс-гарантий читатель — wait-free per invocation,
+не только lock-free. Стоит зафиксировать это в контракте точно.
+
+**По Mailbox2SlotSmp — предлагаю пересмотреть дизайн:**
+
+Оригинальный Mailbox2Slot построен на двухслотовом claim-verify протоколе.
+Адаптировать его для SMP сложно: claim-verify требует аппаратно-видимой синхронизации
+между двумя сторонами без spinlock — то есть CAS-цепочку, которая либо усложняет
+протокол, либо делает одну из сторон не wait-free.
+
+Есть более простая альтернатива для Mailbox2SlotSmp на SeqLock-основе:
+
+    Один слот (не два):
+    Писатель: seq.fetch_add(1, release) → write slot → seq.fetch_add(1, release)
+    Читатель (одна попытка):
+        seq1 = load(seq, acquire)
+        if seq1 % 2 != 0: return false   // писатель в процессе
+        copy slot
+        seq2 = load(seq, acquire)
+        if seq1 != seq2: return false    // запись была во время копирования
+        return true
+
+    Писатель: wait-free, O(1).
+    Читатель: wait-free per invocation (одна попытка → false или true), O(1).
+    SMP: корректен — seq-верификация поймает любой concurrent write.
+
+Семантика идентична оригинальному Mailbox2Slot:
+latest-wins, false при гонке (sticky-state у клиента), false до первой публикации.
+
+Преимущество: 1 слот вместо 2, нет claim-verify, нет preemption_disable.
+Недостаток: при больших T читатель чаще получает false (писатель пишет дольше).
+Для RT-систем с небольшими T (структуры данных датчиков, команды) это приемлемо.
+
+Предлагаю Кодексу рассмотреть этот вариант при написании контракта Mailbox2SlotSmp.
+Если двухслотовый подход принципиален — нужно обоснование зачем он лучше SeqLock на SMP.
+
+
+[Сессия 0039][Оператор]
+
+Может тогда переводить Mailbox2Slot в 3-х слотовый вариант?? Но тогда это просто вырожденный вариант СПМЦ.
+
+Кодекс?
+
+[Сессия 0040][Кодекс]
+Хороший вопрос. Коротко: для `Mailbox2SlotSmp` 3 слота не обязательны и, как базовое решение, не выгоднее seq-подхода.
+
+Почему:
+1. Цель `Mailbox2Slot` — 1P/1C, latest-wins, минимальный overhead.
+2. Добавление 3-го слота не убирает само по себе SMP-гонки; всё равно нужен корректный протокол claim/publish и memory-order инварианты.
+3. После добавления claim-маски/выбора свободного слота протокол действительно начинает концептуально сближаться с `SPMCSnapshot` (только с 1 читателем), но остаётся дороже по состояниям и проверкам, чем односоктовый seq-вариант.
+
+Практический вывод:
+- Для `Mailbox2SlotSmp` как базу беру 1-slot seq-вариант (writer wait-free, reader wait-free per call / lock-free в общем смысле, O(1), без mutex).
+- 3-slot имеет смысл только если в требованиях появится отдельная цель: снизить вероятность `false` на читателе при длинном copy(T) и высокой частоте publish().
+  Тогда это уже отдельный дизайн-профиль, ближе к snapshot-family, и его лучше оформлять отдельным типом, а не перегружать базовый `Mailbox2SlotSmp`.
+
+
+[Сессия 0039][Оператор]
+
+Не нравится мне однослотовая модель. Вероятность фейлов высока.
+Клод?
+
+[Сессия 0041][Клод]
+Оператор прав. На SMP с 1 слотом писатель работает на другом ядре непрерывно,
+поэтому любое копирование T рискует пересечься с записью. False-rate неприемлем.
+
+Предлагаю: **2 слота + per-slot seqlock, читатель возвращает false вместо retry.**
+
+Протокол:
+
+    Писатель (wait-free):
+        j = published.load(relaxed) ^ 1       // выбрать неопубликованный слот
+        seq[j].fetch_add(1, release)           // открыть запись (seq нечётный)
+        slots[j].value = value
+        seq[j].fetch_add(1, release)           // закрыть запись (seq чётный)
+        published.store(j, release)
+
+    Читатель (одна попытка, wait-free per invocation):
+        i = published.load(acquire)
+        seq1 = seq[i].load(acquire)
+        if seq1 % 2 != 0: return false         // писатель пишет в этот слот? (см. ниже)
+        out = slots[i].value                   // копировать
+        seq2 = seq[i].load(acquire)
+        if seq1 != seq2: return false          // писатель вошёл в слот i во время копии
+        return true
+
+Почему false-rate низкий:
+Писатель всегда пишет в слот j = published^1 — НЕ в текущий published слот.
+Чтобы испортить копирование читателя (слот i = published), писатель должен:
+    цикл 1: записать в j ≠ i, опубликовать j
+    цикл 2: записать в i (теперь j = i) — вот здесь коллизия
+Для RT систем с ограниченной частотой write это событие исключительно редко.
+На практике: false только при двух полных циклах publish() за время copy(T).
+
+Почему SMP-корректен:
+    published.store(j, release) после seq[j] закрыт (чётный) гарантирует:
+    любой читатель, кто загрузил published=j через acquire-load,
+    видит seq[j] как чётный и слот j полностью записанным.
+    Если писатель войдёт в слот i во время копирования — seq[i] изменится,
+    читатель поймает это при re-verify.
+
+Сравнение с вариантами:
+
+    1-slot seqlock:     false при ЛЮБОМ publish() во время copy → высокий false-rate
+    2-slot + seqlock:   false только при 2 циклах → в разы реже
+    3-slot (SPMC N=1):  false никогда (писатель не может коснуться claimed-слота)
+                        но: claim-протокол сложнее и дороже
+
+2 слота + seqlock — оптимальный баланс: простота протокола, низкий false-rate,
+те же 2 слота что в оригинальном Mailbox2Slot, без claim-verify, без preemption_disable.
+
+Предлагаю принять это как базу для Mailbox2SlotSmp.
+
+Примечание про "if seq1 % 2 != 0: return false":
+По протоколу published флипается только ПОСЛЕ закрытия seq[j].
+Поэтому в штатном сценарии seq[i] всегда чётный в момент загрузки published=i.
+Нечётный seq[i] при published=i — теоретически возможен только при race
+между flip published и momentary load (видимость на SMP). Проверка оставлена
+как защитная — корректности не нарушает, лишнего false не добавляет в steady-state.
+
+[Сессия 0042][Кодекс]
+Проверил 0041. Поддерживаю переход на `2-slot + per-slot seqlock` как базу для `Mailbox2SlotSmp`.
+
+Согласен по сути:
+1. Это снимает главный риск 1-slot модели (высокий false-rate при любой concurrent publish).
+2. Сохраняет простую 1P/1C топологию и writer wait-free.
+3. Даёт практически более низкий false-rate: для коллизии нужен второй publish-цикл до завершения copy читателя.
+
+Технические уточнения для контракта (чтобы не было разночтений в коде):
+1. `published` должен быть бинарным индексом (`0/1`) без состояния `NONE` после первой публикации; до первой публикации — отдельный флаг `has_value` или sentinel.
+2. Быстрый путь writer:
+   - `j = published ^ 1`
+   - `seq[j]` odd/even
+   - `slot[j] = value`
+   - `published.store(j, release)`
+3. Читатель:
+   - `i = published.load(acquire)`
+   - `seq1 = seq[i].load(acquire)`; если odd -> false
+   - copy
+   - `seq2 = seq[i].load(acquire)`; если `seq1 != seq2` -> false, иначе true
+4. Гарантии прогресса фиксируем явно:
+   - writer: wait-free O(1)
+   - reader: wait-free per invocation (single-shot), lock-free по потоку вызовов.
+
+Итог: принимаю 2-slot seqlock-вариант как целевой для `Mailbox2SlotSmp`.
+
+[Сессия 0043][Оператор]
+Клод, что в консенсусе, что осталось?
+
+[Сессия 0044][Клод]
+Обновляю консенсус. Всё зафиксированное — с сессий 0028–0042.
+
+---
+
+[Консенсус — финальный, v2]
+
+**Что не меняем:**
+- `SPSCRing` — уже SMP-корректен (acquire/release на head_/tail_, без preemption_disable).
+- Все три UP-only примитива остаются в кодовой базе, маркируются явно в заголовках:
+  `// CONTRACT: UP-only (single-core + preemptive). Not safe on SMP.`
+
+**Три новых SMP-примитива:**
+
+1. `DoubleBufferSeqLock`
+   Топология: 1P / 1C.
+   Протокол: глобальный seq-счётчик. Писатель: seq++ (нечётный) → write → seq++ (чётный).
+   Читатель: retry-loop: seq1 → copy → seq2; если seq1 нечётный или seq1≠seq2 — повторить.
+   Прогресс: writer wait-free; reader lock-free (retry при конкуренции).
+
+2. `Mailbox2SlotSmp`
+   Топология: 1P / 1C.
+   Протокол: 2 слота + per-slot seq.
+   Писатель: j=published^1; seq[j]++ (нечётный); write; seq[j]++ (чётный); published=j.
+   Читатель (single-shot, no retry): i=published; seq1=seq[i]; если нечётный→false;
+   copy; seq2=seq[i]; если seq1≠seq2→false; иначе true.
+   До первой публикации: отдельный флаг has_value (published не несёт NONE-состояния).
+   Прогресс: writer wait-free O(1); reader wait-free per invocation, lock-free по потоку.
+   False-rate: низкий — только при 2 полных publish()-циклах за время copy(T).
+
+3. `SPMCSnapshotSmp`
+   Топология: 1P / NC (N≤30).
+   Протокол: fetch_or(1<<i) + re-verify + optional fetch_and на busy_mask.
+   Читатель (single-shot):
+       i = load(published, acq)
+       busy_mask.fetch_or(1<<i, acq_rel)
+       i2 = load(published, acq)
+       если i2≠i: busy_mask.fetch_and(~(1<<i), rel); return false
+       copy; release claim
+   Прогресс: writer wait-free O(1); reader wait-free per invocation.
+
+**Документация:**
+- `primitives_README.md`: добавить матрицу UP-safe / SMP-safe для всех примитивов.
+- Для каждого нового SMP-типа: контракт по шаблону Кодекса (сессия 0037):
+  topology / progress guarantees / API / memory model / invariants / failure semantics / cost model.
+
+**Тесты:**
+- Стресс-тест для каждого SMP-примитива: многопоточный раннер, проверка torn-read и ABA.
+
+---
+
+**Что осталось (порядок работ):**
+
+Шаг 1. Маркировка UP-only в заголовках трёх примитивов + матрица в README.
+Шаг 2. Контракты: Кодекс пишет черновики по шаблону → обсуждение → фиксация.
+Шаг 3. Реализация: DoubleBufferSeqLock → SPMCSnapshotSmp → Mailbox2SlotSmp.
+Шаг 4. Стресс-тесты для каждого нового примитива.
+Шаг 5. Унификация интерфейсов всех примитивов (минимальный overhead при связывании каналов).
+
+
+[Сессия 0043][Оператор]
+Клод меняет Маркировку UP-only в заголовках трёх примитивов + матрицу в README согласно шага 1.
+Кодекс проверяет.
+
+[Сессия 0045][Клод]
+Шаг 1 выполнен. Отчёт.
+
+Заголовки — добавлен блок PLATFORM CONSTRAINT:
+
+  dbl_buffer.hpp — перед SAFETY NOTE:
+      PLATFORM CONSTRAINT: UP-only (single-core + preemptive). Not safe on SMP.
+      For SMP use DoubleBufferSeqLock (pending).
+
+  mailbox2slot.hpp — перед PREEMPTION SAFETY:
+      PLATFORM CONSTRAINT: UP-only (single-core + preemptive). Not safe on SMP.
+      For SMP use Mailbox2SlotSmp (pending).
+
+  spmc_snapshot.hpp — перед Validity conditions:
+      PLATFORM CONSTRAINT: UP-only / Condition B SMP only.
+      For general SMP use SPMCSnapshotSmp (pending).
+
+  spsc_ring.hpp — не трогал (SMP-корректен).
+
+primitives_README.md — четыре изменения:
+
+  1. Добавлена секция SPMCSnapshot (отсутствовала).
+  2. В таблицу Semantic Comparison добавлена строка SPMCSnapshot.
+  3. Добавлена таблица SMP Safety Matrix:
+       DoubleBuffer  | UP-safe ✓ | SMP-safe ✗
+       Mailbox2Slot  | UP-safe ✓ | SMP-safe ✗
+       SPMCSnapshot  | UP-safe ✓ | SMP-safe ✗/cond.
+       SPSCRing      | UP-safe ✓ | SMP-safe ✓
+  4. Секция SMP And Multi-Core Limitations расширена: добавлен SPMCSnapshot,
+     каждый примитив явно помечен UP-only или SMP-safe,
+     добавлены ссылки на pending SMP-варианты.
+
+[Сессия 0046][Кодекс]
+Проверил отчёт 0045 по фактическим файлам. Подтверждаю: шаг 1 выполнен корректно.
+
+Проверка:
+1. `dbl_buffer.hpp` — блок `PLATFORM CONSTRAINT` добавлен, ссылка на `DoubleBufferSeqLock (pending)` есть.
+2. `mailbox2slot.hpp` — блок `PLATFORM CONSTRAINT` добавлен, ссылка на `Mailbox2SlotSmp (pending)` есть.
+3. `spmc_snapshot.hpp` — блок `PLATFORM CONSTRAINT` добавлен (`UP-only / Condition B SMP`), ссылка на `SPMCSnapshotSmp (pending)` есть.
+4. `spsc_ring.hpp` — без изменений (как и согласовано).
+5. `primitives/primitives_README.md`:
+   - секция `SPMCSnapshot` присутствует;
+   - в `Semantic Comparison` строка `SPMCSnapshot` есть;
+   - `SMP Safety Matrix` добавлена;
+   - `SMP And Multi-Core Limitations` расширена по всем примитивам.
+
+Одно замечание на доработку (док-несоответствие, не блокер шага 1):
+- В `primitives_README.md` раздел `Common Requirements For All Primitives` содержит пункт
+  "Exactly one producer and one consumer (SPSC)", что противоречит `SPMCSnapshot` (1P/NC).
+  Предлагаю на шаге 2 разнести этот блок на:
+  - общие требования для всех;
+  - topology-specific требования (SPSC / SPMC).
+
+
+[Сессия 0046][Оператор]
+Кодекс пишет черновики контрактов по шаблону → обсуждение → фиксация и меняет primitives_README.md согласно его замечанию
+
+[Сессия 0047][Кодекс]
+Принял задачу. Подтверждаю старт шага 2:
+1. Готовлю черновики контрактов по шаблону (topology / progress / API / memory model / invariants / failure semantics / cost model) для:
+   - `DoubleBufferSeqLock`
+   - `SPMCSnapshotSmp`
+   - `Mailbox2SlotSmp`
+2. Параллельно правлю `primitives/primitives_README.md` по замечанию 0046:
+   - разделяю "общие требования" и "топология-специфичные требования (SPSC/SPMC)".
+
+После внесения черновиков и правки README дам отдельный отчёт по каждому пункту для обсуждения и фиксации.
+
+[Сессия 0048][Кодекс]
+Шаг 2 исполнен: черновики контрактов подготовлены + `primitives_README.md` исправлен по замечанию 0046.
+
+Сделано:
+
+1. Добавлены черновики контрактов (по шаблону: topology / progress / API / memory model / invariants / failure semantics / cost model):
+   - `primitives/docs/DoubleBufferSeqLock - RT Contract & Invariants.md`
+   - `primitives/docs/SPMCSnapshotSmp - RT Contract & Invariants.md`
+   - `primitives/docs/Mailbox2SlotSmp - RT Contract & Invariants.md`
+
+2. Исправлен `primitives/primitives_README.md`:
+   - раздел `Common Requirements For All Primitives` приведён к реально общим требованиям;
+   - добавлен отдельный подраздел `Topology-Specific Requirements`:
+     - SPSC: `DoubleBuffer`, `Mailbox2Slot`, `SPSCRing`
+     - SPMC: `SPMCSnapshot` (1P / NC).
+
+Ключевые решения, зафиксированные в черновиках:
+
+1. `DoubleBufferSeqLock`:
+   - writer wait-free O(1), reader lock-free (retry-loop);
+   - seq odd/even протокол с verify у читателя.
+
+2. `SPMCSnapshotSmp`:
+   - writer wait-free O(1), reader wait-free per invocation;
+   - single-shot reader claim: `fetch_or + re-verify + optional fetch_and`.
+
+3. `Mailbox2SlotSmp`:
+   - выбран базовый протокол `2 slots + per-slot seq`;
+   - writer wait-free O(1);
+   - reader single-shot `try_read` (wait-free per invocation), `false` при race;
+   - добавлен `has_value` для фазы до первой публикации.
+
+Что прошу подтвердить перед фиксацией:
+1. Именование новых документов (`...Smp`, `...SeqLock`) устраивает.
+2. Для `DoubleBufferSeqLock` сохраняем retry-loop в `read()` (а не single-shot false).
+3. Для `Mailbox2SlotSmp` оставляем именно `2-slot + per-slot seq` как baseline.
+
+После подтверждения перейду к следующему шагу (реализация в порядке: `DoubleBufferSeqLock` → `SPMCSnapshotSmp` → `Mailbox2SlotSmp`).
+
+[Сессия 0049][Оператор]
+
+Клод, замечания к черновикам???
+
+[Сессия 0050][Клод]
+Прочитал все три черновика. Два из трёх — без блокеров. Один — критическая проблема.
+
+---
+
+DoubleBufferSeqLock — без блокеров. Два уточнения:
+
+1. В §1/§2 нет явного указания "SMP-safe: yes". Нужно добавить в topology-раздел.
+
+2. Поведение до первой write() не задокументировано в §6.
+   По аналогии с оригинальным DoubleBuffer: read() вернёт нулевую копию T.
+   "No data yet" семантически неотличимо от "valid zero snapshot". Стоит зафиксировать.
+
+3. (Пояснение, не требует правки) Если writer делает 2 цикла пока reader копирует —
+   данные в буфере меняются во время copy(T). Это data race по C++ ISO.
+   Seqlock принимает это как допустимый компромисс: torn-копия обнаруживается
+   seq-верификацией и отбрасывается. Для RT-систем с trivially copyable T — приемлемо.
+   Рекомендую добавить NOTE в §5 Invariants: явно назвать это "known seqlock trade-off".
+
+---
+
+SPMCSnapshotSmp — КРИТИЧЕСКАЯ ПРОБЛЕМА: отсутствует refcnt для N>1.
+
+При N=1 черновик корректен. При N>1 — баг протокола:
+
+Сценарий (N=2, readers A и B оба claim slot i):
+  1. A: fetch_or(1<<i) → busy_mask[i] = 1
+  2. B: fetch_or(1<<i) → busy_mask[i] = 1 (бит уже стоит, но OK)
+  3. A: копирует slots[i]
+  4. A: ЗАВЕРШАЕТ — fetch_and(~(1<<i)) → busy_mask[i] = 0  ← бит снят!
+  5. Writer: видит busy_mask[i] = 0, published ≠ i → выбирает j = i → ПИШЕТ в slots[i]
+  6. B: всё ещё копирует slots[i] → TORN READ
+
+Оригинальный SPMCSnapshot решает это через refcnt[i]:
+только последний reader (fetch_sub возвращает 1) очищает бит в busy_mask.
+
+Это необходимо перенести и в SPMCSnapshotSmp:
+  RELEASE claim (шаг 5 в reader):
+    if (refcnt[i].fetch_sub(1, acq_rel) == 1)
+        busy_mask.fetch_and(~(1<<i), release);
+
+Без этого SPMCSnapshotSmp корректен только для N=1.
+Блокер для фиксации черновика, нужна правка.
+
+Дополнительно: в §4 reader-протоколе отсутствует шаг "if !initialized → return false"
+(есть в §6 Failure Semantics, но не в §4 Memory Model). Нужно добавить.
+
+---
+
+Mailbox2SlotSmp — без блокеров. Одно пояснение:
+
+Проверка "if seq[i] odd → return false" (шаг 3 reader) в штатном сценарии
+недостижима по инварианту протокола:
+  Writer публикует `published = j` только ПОСЛЕ seq[j].fetch_add(→even, release).
+  Reader загружает published = j через acquire-load, что устанавливает
+  happens-before с writer's release — reader всегда видит seq[j] как чётный.
+
+Проверка остаётся как defensive guard (допустимо, overhead нулевой).
+Рекомендую добавить в §5 Invariants: "seq[published] is always even at the moment
+reader loads published via acquire. The odd-guard in try_read() is defensive."
+
+Общий вывод: DoubleBufferSeqLock и Mailbox2SlotSmp — готовы к фиксации с минорными правками.
+SPMCSnapshotSmp — нужна правка refcnt перед фиксацией.
+
+[Сессия 0051][Кодекс]
+Проверил 0050. Подтверждаю выводы Клода.
+
+Статус по черновикам:
+1. `DoubleBufferSeqLock` — не блокирует, принимаю 2 доработки:
+   - явно добавить `SMP-safe: yes` в topology/constraints;
+   - зафиксировать поведение `read()` до первой `write()` (семантически неотличимо от valid zero-snapshot).
+   - NOTE про seqlock trade-off (возможна torn-копия, отбрасывается verify) — добавить.
+
+2. `SPMCSnapshotSmp` — блокер подтверждаю:
+   - без `refcnt` протокол корректен только для `N=1`;
+   - для `N>1` возможен ранний clear `busy_mask` одним reader при активном втором reader.
+   Перед фиксацией правим черновик:
+   - возвращаем `refcnt[i]`;
+   - release claim: clear `busy_mask` только на переходе `refcnt: 1 -> 0`;
+   - в §4 явно добавляем шаг `if !initialized -> return false`.
+
+3. `Mailbox2SlotSmp` — без блокеров; принимаю пояснение:
+   - `odd` guard оставить как defensive check;
+   - в инвариантах явно зафиксировать: при `published`-чтении через acquire штатно наблюдается even `seq[published]`.
+
+Предлагаю так: вношу эти правки в 3 черновика и после этого отдаю обновлённый вариант на финальную фиксацию консенсуса шага 2.
+
+[Сессия 0052][Кодекс]
+Правки внесены. Обновлены все 3 черновика контрактов согласно замечаниям 0050/0051.
+
+1. `DoubleBufferSeqLock - RT Contract & Invariants.md`
+   - Добавлено явное `Platform target: SMP-safe` в topology.
+   - В `Failure/Retry Semantics` добавлено поведение до первой `write()`:
+     возвращается value-initialized content; "no data yet" семантически неотличимо от valid zero snapshot.
+   - В `Invariants` добавлен NOTE про seqlock trade-off:
+     возможна torn промежуточная копия при overlap, но она отбрасывается seq-верификацией.
+
+2. `SPMCSnapshotSmp - RT Contract & Invariants.md`
+   - Закрыт блокер по `N>1`: добавлен `refcnt[i]` в reader-протокол.
+   - Reader claim/release теперь:
+     `fetch_or(busy_mask)` -> `fetch_add(refcnt)` -> re-verify ->
+     on release `fetch_sub(refcnt)` и clear busy только при переходе `1 -> 0`.
+   - В §4 добавлен явный шаг `if !initialized -> return false`.
+   - В `Invariants` добавлены пункты про связь `refcnt` и `busy_mask`.
+   - `Cost model` обновлён с учётом `refcnt` RMW.
+
+3. `Mailbox2SlotSmp - RT Contract & Invariants.md`
+   - В `Invariants` добавлено уточнение:
+     при `published.load(acquire)` в steady-state ожидается even `seq[published]`;
+     odd-check в reader сохранён как defensive guard.
+
+Итог:
+- Критический блокер по `SPMCSnapshotSmp` устранён.
+- Черновики готовы к финальной проверке и фиксации консенсуса шага 2.
+
+[Сессия 0053][Клод]
+Прочитал все три обновлённых черновика. Все замечания 0050 закрыты. Протоколы корректны.
+
+Верификация SPMCSnapshotSmp (основная проблема):
+
+Обновлённый reader-протокол:
+    3. fetch_or(busy_mask[i], acq_rel)     // claim: busy BEFORE refcnt
+    4. fetch_add(refcnt[i], acq_rel)       // confirm count
+    5. i2 = load(published, acq)           // re-verify
+    6. if i2 != i: fetch_sub(refcnt) → if 1→0: clear busy; return false
+    7. copy slots[i]
+    8. fetch_sub(refcnt) → if 1→0: clear busy; return true
+
+Инвариант I5 сохранён: busy_mask[i] очищается только последним reader (refcnt: 1→0).
+Порядок claim: busy РАНЬШЕ refcnt — гарантирует что writer видит занятость до подтверждения.
+Порядок release: refcnt РАНЬШЕ busy — гарантирует что refcnt=0 до снятия бита.
+
+Проверил дополнительный сценарий (N=2, Reader A прерывается между step 3 и step 4):
+- Reader B полностью завершается (refcnt: 1→0, bit cleared)
+- Writer может снова выбрать slot i, ТОЛЬКО если published ≠ i (I3)
+- Reader A при re-verify (step 5) увидит изменённый published → false
+- Разрыв чтения невозможен: Reader A копирует только если published == i при step 5,
+  что по I3 блокирует писателя от выбора slot i
+Протокол корректен для N>1. ✓
+
+Одно минорное замечание (не блокер, рекомендация):
+SPMCSnapshotSmp §1 Topology не имеет явного "Platform target: SMP-safe",
+в отличие от DoubleBufferSeqLock. Стоит добавить при финализации для единообразия.
+
+Ответы на вопросы Кодекса из сессии 0048:
+1. Именование (Smp / SeqLock) — принимаю. DoubleBufferSeqLock подчёркивает retry-семантику.
+2. DoubleBufferSeqLock: retry-loop в read() — да, оставляем (lock-free, consense зафиксирован).
+3. Mailbox2SlotSmp: 2-slot + per-slot seq — да, оставляем как baseline.
+
+Шаг 2 завершён. Черновики готовы к фиксации. Можно переходить к шагу 3 — реализации.
+
+[Сессия 0054][Кодекс]
+Проверил и финализировал контракты шага 2.
+
+Что финализировано:
+1. `primitives/docs/DoubleBufferSeqLock - RT Contract & Invariants.md`
+   - снят статус Draft;
+   - `Revision` обновлён до `1.0 (March 2026)`.
+
+2. `primitives/docs/SPMCSnapshotSmp - RT Contract & Invariants.md`
+   - снят статус Draft;
+   - `Revision` обновлён до `1.0 (March 2026)`;
+   - добавлена явная пометка в topology: `Platform target: SMP-safe`.
+
+3. `primitives/docs/Mailbox2SlotSmp - RT Contract & Invariants.md`
+   - снят статус Draft;
+   - `Revision` обновлён до `1.0 (March 2026)`;
+   - добавлена явная пометка в topology: `Platform target: SMP-safe`.
+
+Итог:
+- Контракты SMP-примитивов зафиксированы в финальном виде (v1.0).
+- Шаг 2 закрыт. Готов переходить к шагу 3 (реализация в порядке: `DoubleBufferSeqLock` → `SPMCSnapshotSmp` → `Mailbox2SlotSmp`).
+
+[Сессия 0055][Оператор]
+
+Клод реализуешь Шаг 3. Реализация: DoubleBufferSeqLock → SPMCSnapshotSmp → Mailbox2SlotSmp.
+[Сессия 0056][Клод]
+Шаг 3 выполнен. Реализованы три SMP-примитива.
+
+**Созданные файлы:**
+
+1. `primitives/include/stam/primitives/dbl_buffer_seqlock.hpp`
+   - `DoubleBufferSeqLockCore<T>` — 2 cacheline-aligned секции: `SeqLine` (seq) + `Slot` (value)
+   - `DoubleBufferSeqLockWriter<T>` — `write()`: wait-free, O(1), 2x `fetch_add(1, release)` вокруг payload copy
+   - `DoubleBufferSeqLockReader<T>` — `read()`: lock-free, retry-loop, 2x `load(acquire)` + copy per attempt
+   - `DoubleBufferSeqLock<T>` — convenience wrapper
+
+2. `primitives/include/stam/primitives/spmc_snapshot_smp.hpp`
+   - Структура идентична `SPMCSnapshot` (K=N+2 slots, busy_mask, published, initialized)
+   - Добавлен `refcnt[K]` (критический, был missing в черновике 0050)
+   - Reader-протокол (wait-free per call):
+     `initialized check` → `load(published=i)` → `fetch_or(busy[i])` → `fetch_add(refcnt[i])` →
+     `re-verify published` → при изменении: release + return false →
+     `copy slots[i]` → release (fetch_sub; if 1→0: fetch_and(busy))
+   - Нет `preemption_disable`. Инвариант I5 (busy перед refcnt при claim; refcnt до busy при release) сохранён.
+   - `detail::ctz32_smp` — переименован чтобы избежать конфликта при совместном включении с `spmc_snapshot.hpp`
+
+3. `primitives/include/stam/primitives/mailbox2slot_smp.hpp`
+   - `Mailbox2SlotSmpCore<T>` — slots[2] (отдельные cacheline) + seqs[2] (per-slot, отдельные cacheline) + ctrl (published + has_value)
+   - Writer-протокол (wait-free, O(1)):
+     `j = published^1` → `seq[j].fetch_add(1, release)` (odd) → write slots[j] →
+     `seq[j].fetch_add(1, release)` (even) → `published.store(j, release)` → `has_value.store(true, release)`
+   - Reader-протокол (wait-free per call, single-shot):
+     `has_value check` → `i = published.load(acquire)` → `s1 = seq[i].load(acquire)` →
+     if odd: false → `copy slots[i]` → `s2 = seq[i].load(acquire)` → if s1≠s2: false → true
+   - Defensive odd-check на step 3 сохранён (как зафиксировано в контракте)
+
+**Обновлён `primitives_README.md`:**
+- Добавлены секции для 3 новых примитивов
+- Semantic Comparison расширена (7 строк)
+- SMP Safety Matrix обновлена (строки "pending" заменены на реализованные)
+- Topology-Specific Requirements: добавлены SMP-варианты в список
+
+Все три реализации следуют контрактам Rev 1.0 (шаг 2).
+Шаг 3 завершён. Готов к шагу 4 — stress tests.
+
+
+[Сессия 0056][Оператор]
+
+Меняем порядок. Сначала унификация контрактов, потом стресс-тесты.
+
+Кодекс, проверь реализации, контракты.
+
+[Сессия 0057][Кодекс]
+Проверил реализации (`dbl_buffer_seqlock.hpp`, `spmc_snapshot_smp.hpp`, `mailbox2slot_smp.hpp`) и финальные контракты Rev 1.0.
+
+Итог проверки:
+1. `DoubleBufferSeqLock` — реализован в соответствии с контрактом:
+   - writer wait-free (2x seq RMW + copy),
+   - reader retry-loop (lock-free),
+   - SMP-safe пометки и seqlock trade-off отражены.
+
+2. `SPMCSnapshotSmp` — критический блокер закрыт:
+   - `refcnt[K]` присутствует,
+   - claim/release порядок корректный (`busy -> refcnt` при claim, `refcnt -> busy` при release),
+   - clear busy только на переходе `refcnt: 1 -> 0`,
+   - `initialized` gate в `try_read()` присутствует.
+
+3. `Mailbox2SlotSmp` — соответствует baseline `2-slot + per-slot seq`:
+   - writer wait-free O(1),
+   - reader single-shot try_read,
+   - defensive odd-check сохранён и документирован.
+
+4. `primitives/primitives_README.md` — структура и матрицы обновлены корректно:
+   - добавлены новые SMP-примитивы,
+   - topology-specific требования разделены.
+
+Минорные замечания (док-унификация, не блокеры):
+1. В разделе `SMP And Multi-Core Limitations` остались формулировки вида
+   "`Use ... (pending)`" для `DoubleBufferSeqLock` / `Mailbox2SlotSmp` / `SPMCSnapshotSmp`,
+   хотя эти варианты уже реализованы.
+2. В `SMP Safety Matrix` строка `Mailbox2SlotSmp` сейчас говорит "both sides wait-free per invocation";
+   формально корректнее: writer wait-free, reader wait-free per invocation (single-shot).
+
+Вывод:
+- Реализация шага 3 технически согласована с контрактами.
+- Можно переходить к следующей задаче: унификация интерфейсов примитивов, затем stress-тесты.
+
+[Сессия 0058][Кодекс]
+Замечания 0057 поправил.
+
+Изменён файл: `primitives/primitives_README.md`
+
+Что исправлено:
+1. В `SMP And Multi-Core Limitations` убраны устаревшие пометки `(pending)`:
+   - `DoubleBufferSeqLock`
+   - `Mailbox2SlotSmp`
+   - `SPMCSnapshotSmp`
+
+2. В `SMP Safety Matrix` уточнена формулировка для `Mailbox2SlotSmp`:
+   - было: "both sides wait-free per invocation"
+   - стало: "writer wait-free, reader wait-free per invocation"
+
+Итог:
+- Документация приведена в соответствие с текущим состоянием реализации.
+- Блокирующих замечаний по шагу 3/унификации контрактов не осталось.
+
+[Сессия 0059][Клод]
+Принял изменения. Шаг 3 закрыт, README актуален.
+
+Следующий шаг: унификация интерфейсов (шаг 5 консенсуса), сдвинутый вперёд оператором.
+
+**Что понимаю под унификацией:**
+В оригинальном плане (сессия 0044): "унификация интерфейсов всех примитивов (минимальный overhead для channel binding)".
+
+Сейчас у нас 3 разных "стиля" именования:
+- `write()`/`read()` — DoubleBuffer, DoubleBufferSeqLock
+- `publish()`/`try_read()` — Mailbox2Slot, Mailbox2SlotSmp, SPMCSnapshot, SPMCSnapshotSmp
+- `push()`/`pop()` — SPSCRing
+
+Вопрос к оператору и Кодексу: что конкретно унифицировать?
+
+**Вариант A — только именование операций:**
+Привести все snapshot-примитивы к единому API:
+`write()` / `try_read()` или `publish()` / `try_read()`.
+SPSCRing оставить с `push()`/`pop()` (другая семантика — FIFO).
+
+**Вариант B — концепт/trait для channel binding:**
+Ввести концепты `Writable<T>` и `Readable<T>` (или аналогичный тег-механизм),
+чтобы channel binding в registry мог работать с любым примитивом через единый интерфейс
+без условной компиляции и switch по типу.
+Это даёт "минимальный overhead" через статический полиморфизм (zero-cost abstraction).
+
+**Вариант C — оба:**
+A + B.
+
+Моя позиция: если целевой use-case — channel binding в реестре, нужен вариант B.
+Именование (вариант A) опционально — можно добавить алиасы не ломая текущий код.
+
+Кодекс, оператор: какой вариант? Есть ли конкретный интерфейс, к которому нужно прийти?
+
+
+[Сессия 0043][Оператор]
+
+Все методы приводим к состояния `write()` / `try_read()` Оптимизация пр варианту А необходима.
+
+Ввести концепты `Writable<T>` и `Readable<T> - не понял, объясните.
+
+[Сессия 0060][Кодекс]
+Принял. Фиксирую решение: делаем **вариант A** — унификация API к `write()` / `try_read()`.
+
+Кратко про `Writable<T>` / `Readable<T>` (только пояснение, без внедрения сейчас):
+- Это compile-time проверки (концепты C++20), что тип имеет нужные методы.
+- Пример идеи:
+  - `Writable<C, T>`: у канала `C` есть `write(const T&) noexcept`
+  - `Readable<C, T>`: у канала `C` есть `try_read(T&) noexcept -> bool`
+- Зачем это бывает нужно: чтобы generic-код (binding/registry) компилировался только для совместимых каналов.
+
+Но по вашему решению сейчас это **не делаем**. Делаем только унификацию методов (A) с минимальным overhead и без лишних абстракций.
+
+Готов перейти к правкам интерфейсов по шагу 5.
+
+[Сессия 0061][Кодекс]
+Выполнил унификацию интерфейсов по варианту A (`write()` / `try_read()`) с сохранением обратной совместимости.
+
+Кодовые правки:
+1. `primitives/include/stam/primitives/mailbox2slot.hpp`
+   - в `Mailbox2SlotWriter` добавлен alias:
+     `void write(const T& value) noexcept { publish(value); }`
+
+2. `primitives/include/stam/primitives/mailbox2slot_smp.hpp`
+   - в `Mailbox2SlotSmpWriter` добавлен alias:
+     `void write(const T& value) noexcept { publish(value); }`
+
+3. `primitives/include/stam/primitives/spmc_snapshot.hpp`
+   - в `SPMCSnapshotWriter` добавлен alias:
+     `void write(const T& value) noexcept { publish(value); }`
+
+4. `primitives/include/stam/primitives/spmc_snapshot_smp.hpp`
+   - в `SPMCSnapshotSmpWriter` добавлен alias:
+     `void write(const T& value) noexcept { publish(value); }`
+
+5. `primitives/include/stam/primitives/dbl_buffer.hpp`
+   - в `DoubleBufferReader` добавлен unified метод:
+     `bool try_read(T& out) const noexcept` (всегда `true`, вызывает `read(out)`).
+
+6. `primitives/include/stam/primitives/dbl_buffer_seqlock.hpp`
+   - в `DoubleBufferSeqLockReader` добавлен unified метод:
+     `bool try_read(T& out) noexcept` (всегда `true`, вызывает `read(out)`).
+
+Документация:
+7. `primitives/primitives_README.md`
+   - добавлена явная секция "Snapshot API unification (v1)":
+     canonical: `write()/try_read()`, legacy aliases (`publish()/read()`) сохранены.
+
+Проверка:
+- `cmake --build /tmp/build -j4` — успешно, без ошибок (есть прежние не-блокирующие warnings в старых тестах).
+
+Итог:
+- Канонический API `write()/try_read()` доступен во всех snapshot-примитивах.
+- Старые вызовы не сломаны (compatibility сохранена).
+
+
+[Сессия 0061][Оператор]
+
+Оптимизируем по варианту **Вариант C — оба:**
+Кодекс, проведи оптимизацию.
+
+[Сессия 0062][Клод]
+Вариант A выполнен корректно — алиасы без overhead, совместимость сохранена.
+
+Перед реализацией концептов (вариант B) уточняю архитектуру:
+
+**Предлагаемые концепты (C++20):**
+
+```cpp
+// SnapshotWriter<W, T>: тип W — пишущая сторона snapshot-канала для значений T.
+template<typename W, typename T>
+concept SnapshotWriter = requires(W w, const T& v) {
+    { w.write(v) } noexcept -> std::same_as<void>;
+};
+
+// SnapshotReader<R, T>: тип R — читающая сторона snapshot-канала для значений T.
+template<typename R, typename T>
+concept SnapshotReader = requires(R r, T& out) {
+    { r.try_read(out) } noexcept -> std::same_as<bool>;
+};
+```
+
+**Размещение:** новый файл `primitives/include/stam/primitives/snapshot_concepts.hpp`.
+Не включать в отдельные примитивы — каждый заголовок независим.
+
+**SPSCRing:** не включать в эти концепты. `push()`/`pop()` — FIFO-семантика, отдельный набор концептов при необходимости.
+
+**Статус проверки алиасов:**
+Все 6 правок Кодекса из сессии 0061 технически корректны. Алиасы — inline, zero-overhead.
+Единственный момент: в `DoubleBuffer` и `DoubleBufferSeqLock` reader `try_read()` всегда возвращает `true`.
+Это задокументированное отличие от `Mailbox2Slot*` — caller должен учитывать.
+Для channel binding это важно: generic-код, ожидающий `false` при "нет данных", должен знать семантику.
+Если нужна однородность семантики `false` = "нет данных" — `DoubleBuffer*` не подходит напрямую.
+Если такой однородности не требуется — всё нормально.
+
+Кодекс: реализуй `snapshot_concepts.hpp` по предложенной схеме выше?
+
+[Сессия 0063][Оператор]
+
+Принято. Кодекс, вноси правки.
+
+[Сессия 0064][Кодекс]
+Вариант C (часть B: концепты) реализован.
+
+Сделано:
+1. Добавлен новый файл:
+   - `primitives/include/stam/primitives/snapshot_concepts.hpp`
+
+2. В файле зафиксированы C++20-концепты:
+   - `SnapshotWriter<W, T>`: требует `w.write(const T&) noexcept -> void`
+   - `SnapshotReader<R, T>`: требует `r.try_read(T&) noexcept -> bool`
+
+3. Обновлён `primitives/primitives_README.md`:
+   - в секцию `Snapshot API unification (v1)` добавлена ссылка на
+     `snapshot_concepts.hpp` и имена концептов.
+
+Проверка:
+- `cmake --build /tmp/build -j4` — успешно.
+
+Итог:
+- Вариант A (унифицированные методы) + вариант B (compile-time концепты)
+  теперь реализованы вместе, без изменения runtime-семантики примитивов.
+
+[Сессия 0065][Оператор]
+
+Переходим к шагу "Стресс-тесты для каждого нового примитива.". Клод, это твоя реализация.
+
+[Сессия 0066][Кодекс]
+Проверил, что было сделано Клодом по стресс-тестам, и дополнил недостающее.
+
+Что было не доделано:
+1. Новые тесты `dbl_buffer_seqlock_test.cpp` и `mailbox2slot_smp_test.cpp` были в репозитории,
+   но не были подключены к сборке `stam_tests`.
+2. Отсутствовал тест-файл для третьего нового примитива: `SPMCSnapshotSmp`.
+3. `main.cpp` тест-раннера не вызывал новые тестовые наборы.
+
+Что доделано:
+1. Подключил новые тесты в `primitives/tests/CMakeLists.txt`:
+   - `dbl_buffer_seqlock_test.cpp`
+   - `mailbox2slot_smp_test.cpp`
+   - `spmc_snapshot_smp_test.cpp` (новый файл)
+
+2. Обновил `primitives/tests/main.cpp`:
+   - добавлены объявления и вызовы:
+     - `dbl_buffer_seqlock_tests()`
+     - `mailbox2slot_smp_tests()`
+     - `spmc_snapshot_smp_tests()`
+
+3. Добавил недостающий файл `primitives/tests/spmc_snapshot_smp_test.cpp`:
+   - функциональные проверки:
+     - концепты `SnapshotWriter/SnapshotReader`
+     - `try_read` до первой публикации
+     - alias `write()`
+     - cleanup `busy_mask/refcnt`
+   - stress-проверки:
+     - `N=1` no torn-read
+     - `N=2` no torn-read
+     - sustained `N=4` + cleanup (`busy_mask==0`, `refcnt==0`)
+
+Результат проверки:
+- `cmake --build /tmp/build -j4` — успешно.
+- запуск `/tmp/build/primitives/tests/stam_tests` — успешно.
+- Все наборы тестов проходят, включая новые:
+  - `DoubleBufferSeqLock`: 20/20 PASS
+  - `Mailbox2SlotSmp`: 22/22 PASS
+  - `SPMCSnapshotSmp`: 7/7 PASS
+
+Итог:
+- Шаг со стресс-тестами для всех трёх новых SMP-примитивов теперь завершён полностью.

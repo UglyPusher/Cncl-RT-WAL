@@ -37,6 +37,10 @@ namespace stam::primitives {
  *    claim-verify (3 atomic ops, independent of sizeof(T)).
  *  - copy(T) is outside both critical sections.
  *
+ * PLATFORM CONSTRAINT:
+ *  - UP-only (single-core + preemptive). Not safe on SMP.
+ *    For SMP use Mailbox2SlotSmp (pending).
+ *
  * PREEMPTION SAFETY (uniprocessor):
  *  - Both publish() and try_read() use sys_preemption_disable/enable to
  *    protect their respective atomic windows. WCET of each critical
@@ -216,6 +220,11 @@ public:
 
         core_.slots[j].value = value;
         core_.pub_state.value.store(j, std::memory_order_release);
+    }
+
+    // Unified snapshot API alias.
+    void write(const T& value) noexcept {
+        publish(value);
     }
 
 private:

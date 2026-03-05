@@ -18,6 +18,10 @@ namespace stam::primitives {
  *  - consumer is NOT re-entrant
  *  - T is trivially copyable (bounded, deterministic copy; no ctor/dtor)
  *
+ * PLATFORM CONSTRAINT:
+ *  - UP-only (single-core + preemptive). Not safe on SMP.
+ *    For SMP use DoubleBufferSeqLock (pending).
+ *
  * SAFETY NOTE (preemption / SMP):
  *  - This component does NOT guarantee torn-free snapshots in general
  *    SMP or preemptive systems.
@@ -168,6 +172,12 @@ public:
             core_.published.load(std::memory_order_acquire);
 
         out = core_.buffers[idx].value;
+    }
+
+    // Unified snapshot API: try_read() always succeeds for DoubleBuffer.
+    [[nodiscard]] bool try_read(T& out) const noexcept {
+        read(out);
+        return true;
     }
 
 private:
