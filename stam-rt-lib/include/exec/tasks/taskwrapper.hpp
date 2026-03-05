@@ -1,30 +1,38 @@
 #pragma once
 #include <atomic>
+#include <cassert>
 #include <concepts>
-#include <cstdint>
 #include "model/tags.hpp"
 #include "stam/stam.hpp"
 
 
 namespace stam::exec::tasks {
 
+using stam::model::tick_t;
+using stam::model::heartbeat_word_t;
+
 template <stam::model::Steppable Payload>
 class TaskWrapper {
 public:
-    explicit TaskWrapper(Payload& payload, std::atomic<uint32_t>& hb) noexcept
-        : payload_(payload), hb_(hb)
-    {
-
-    }
+    explicit TaskWrapper(Payload& payload) noexcept
+        : payload_(payload)
+    {}
 
     TaskWrapper(const TaskWrapper&) = delete;
     TaskWrapper& operator=(const TaskWrapper&) = delete;
     TaskWrapper(TaskWrapper&&) = delete;
     TaskWrapper& operator=(TaskWrapper&&) = delete;
 
-    void step(uint32_t now) noexcept {
+    void attach_hb(std::atomic<heartbeat_word_t>* hb) noexcept {
+        assert(hb  != nullptr);   // реестр обязан передать валидный указатель
+        assert(hb_ == nullptr);   // привязка ровно один раз
+        hb_ = hb;
+    }
+
+    void step(tick_t now) noexcept {
+        assert(hb_ != nullptr);
         payload_.step(now);
-        hb_.store(now, std::memory_order_release);
+        hb_->store(now, std::memory_order_release);
     }
 
     void init() noexcept {
@@ -38,8 +46,8 @@ public:
     }
 
 private:
-    Payload& payload_;
-    std::atomic<uint32_t>& hb_;
+    Payload&                       payload_;
+    std::atomic<heartbeat_word_t>* hb_ = nullptr;
 };
 
 } // namespace stam::exec::tasks

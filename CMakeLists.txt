@@ -13,6 +13,10 @@ option(BUILD_MODULES    "Build optional modules" ON)
 option(BUILD_APPS       "Build example applications" ON)
 option(BUILD_TESTS      "Build tests" ON)
 
+if(BUILD_TESTS)
+    enable_testing()
+endif()
+
 # ---- Primitives ------------------------------------------------------------
 
 add_subdirectory(primitives)
@@ -36,6 +40,5 @@ endif()
 # ---- Tests -----------------------------------------------------------------
 
 if(BUILD_TESTS)
-    enable_testing()
     add_subdirectory(tests)
 endif()
