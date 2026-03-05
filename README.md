@@ -1,78 +1,130 @@
-# Real-Time Logging System (WAL-Inspired)
+# Separated Task Application Model (STAM)
 
-This repository contains a design and reference implementation of a
-**logging / journaling subsystem intended for use in real-time execution
-contexts**, drawing structurally on principles commonly associated with
-Write-Ahead Logging (WAL).
+> **Status:** active R&D · contracts-first · License: MIT
 
-The focus of this work is **architectural correctness, determinism,
-and separation of concerns**, rather than a specific platform or runtime
-environment.
+A C++ library of RT and non-RT components for embedded/industrial systems, built around strict domain separation and explicit contracts. Includes a *brewery control* reference application as a real-world demonstration.
 
----
-
-## Repository Structure
-
-- `task.md`  
-  Formal task statement as provided, without interpretation.
-
-- `design.md`  
-  Design rationale and architectural overview.
-  This document explains *what* the system is intended to do and *why*
-  certain design choices were made.
-  It does **not** define requirements, guarantees, or implementation details.
-
-- `src/`  
-  Reference implementation demonstrating how the design can be realized.
-  Implementation choices are intentionally kept local to the code.
-
-- `tests/`  
-  Tests validating correctness, failure handling, and observable behavior
-  of the implementation.
+**Core principle:**
+- **RT domain** — bounded, deterministic, no-alloc, no syscalls, no blocking.
+- **non-RT domain** — persistence, analytics, diagnostics; everything expensive and potentially unpredictable.
 
 ---
 
-## Scope and Intent
+## Target platforms
 
-This work is intended to demonstrate:
-
-- Reasoning about real-time constraints and determinism
-- Application of WAL-inspired structural concepts outside of transactional storage
-- Clear separation between RT-critical and non-RT responsibilities
-- Awareness of failure modes and recovery considerations
-
-The repository does **not** attempt to define:
-- specific real-time deadlines or RT classes
-- durability service-level guarantees
-- platform- or kernel-specific behavior
-
-Such aspects are treated as deployment- and policy-dependent.
+| Architecture | Examples |
+|---|---|
+| ARM Cortex-M | STM32, etc. |
+| ARM Cortex-A | embedded Linux, Raspberry Pi |
+| x86/x64 | PC / industrial controllers |
 
 ---
 
-## Design vs. Implementation
+## Repository structure
 
-A deliberate distinction is maintained between:
+```
+stam/
+├── primitives/          # RT-safe lock-free primitives (SPSCRing, DoubleBuffer, …)
+│   ├── include/stam/
+│   │   ├── primitives/  # SPSCRing, DoubleBuffer, SPMCSnapshot, Mailbox2Slot, CRC32_RT
+│   │   └── sys/         # portability layer (arch, compiler, fence, preemption)
+│   └── tests/
+├── stam-rt-lib/         # RT execution model (TaskWrapper, SysRegistry)
+│   └── include/
+│       ├── exec/tasks/  # taskwrapper.hpp
+│       └── model/       # tags.hpp (concepts: Steppable, RtPayload, …)
+├── modules/             # Non-RT components (logging, …)
+├── apps/
+│   ├── brewery/         # Reference application: RT control + non-RT logging
+│   ├── demo/
+│   │   └── trivial_tasks/ # Minimal RT/non-RT interaction demo
+│   └── minimal/         # Minimal boot example
+└── docs/
+```
 
-- **Design intent**, captured in `design.md`
-- **Implementation decisions**, captured in code and tests
-
-The design document avoids fixing implementation details that are not
-explicitly required by the task statement. Where multiple correct
-implementations are possible, the choice is deferred to code.
+**Hard rule:** `primitives/` and `stam-rt-lib/` do not depend on `modules/`. The reverse is allowed.
 
 ---
 
-## How to Read This Repository
+## Architecture
 
-1. Start with `task.md` to understand the formal scope.
-2. Read `design.md` for architectural intent and trade-offs.
-3. Review the implementation to see one concrete realization of the design.
-4. Inspect tests to understand observable behavior and failure handling.
+### RT Components (hard-RT path)
+- no allocations, no syscalls/IO, no locks/waits
+- bounded O(1) operations
+- acquire/release strictly per C++ memory model
+- explicit invariants and misuse contracts per component
+
+Primitives: `SPSCRing`, `DoubleBuffer`, `SPMCSnapshot`, `Mailbox2Slot`, `CRC32_RT`
+
+### Non-RT Components
+- drain RT-ring → staging queue / in-memory WAL → sink (file/flash/uart)
+- storage durability policies (fsync/flush, batching, backpressure)
+- analytics / diagnostics / UI / environment simulators
+
+### HAL (Hardware Abstraction Layer)
+Isolates platform-specific code: tick source, GPIO/ADC/SPI/I2C/UART, cache maintenance, watchdog, failsafe outputs. RT code depends on HAL through a minimal interface only.
 
 ---
 
-## Status
+## Reference application: Brewery Control
 
-This repository represents a complete design and working implementation
-intended for review and discussion.
+**RT loop:** temperature sensors → PID/bang-bang control → heater/cooler/pump/valve actuators → telemetry snapshot + lossy event log → non-RT.
+
+**Safety scenarios covered:** overheat, dry-run, sensor failure, watchdog timeout, escalation FSM (WARN → LIMIT → SHED → PANIC).
+
+**non-RT:** logging, persistence, config/calibration, metrics export, trend analysis.
+
+---
+
+## Component contracts
+
+Every primitive and component carries a formal contract covering:
+
+- Scope / semantic model
+- Compile-time and runtime invariants
+- Threading model preconditions
+- Memory ordering (happens-before), linearization points
+- Progress guarantees (wait-free / bounded completion)
+- Misuse scenarios and UB model
+- RT path budget notes
+
+Contract docs: [`primitives/docs/`](primitives/docs/)
+
+---
+
+## Safety model
+
+**Safety contract** defines: safe state, fault model, escalation FSM, ownership of safety lines (no re-entrancy), watchdog strategy (internal + external), shutdown policy.
+
+**Degradation contract** defines: which events are dropped first, which are *never* dropped (PANIC/SAFETY), and recovery conditions.
+
+---
+
+## Implementation principles (non-negotiable)
+
+**RT path:** `noexcept`, no malloc/new/delete, no syscalls/IO/sockets, no locks/waits/condvars. Failures expressed as return values or counters.
+
+**Portability:** single codebase; configuration via `#define` / optional override header (`user_sys_config.hpp`). CPU fences and cache maintenance are opt-in and documented.
+
+**Observability:** telemetry via snapshot (`DoubleBuffer`), events via lossy queue (`SPSCRing`), degradation level as an explicit signal + metrics.
+
+---
+
+## Roadmap
+
+- [x] Core RT primitives + portability layer
+- [ ] RT logger publish API + non-RT drain/sink pipeline
+- [ ] Brewery RT domain skeleton (sensors → control → actuators → log)
+- [ ] Safety + degradation contracts (docs + code)
+- [ ] PC/Linux simulation + unit/property tests
+- [ ] Port to STM32
+
+---
+
+## Quick start
+
+Not yet available as a single documented flow.  
+Interim entry points are:
+- `apps/minimal` for bootstrapping
+- `apps/demo/trivial_tasks` for RT/non-RT interaction
+- `apps/brewery` for the reference scenario

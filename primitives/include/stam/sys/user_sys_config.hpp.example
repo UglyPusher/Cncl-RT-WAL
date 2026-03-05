@@ -1,0 +1,30 @@
+#pragma once
+
+// STM32F4 configuration
+#define SYS_ENABLE_RT              1
+#define SYS_ASSUME_SINGLE_CORE     1   // Cortex-M4 single-core
+#define SYS_CACHELINE_BYTES        32  // D-cache line (if enabled)
+#define SYS_RB_ALIGNMENT           4   // 32-bit ARM alignment
+#define SYS_USE_STD_ATOMICS        1
+#define SYS_STRICT_RT              1
+#define SYS_HAS_DATA_CACHE         1   // STM32F4 has optional D-cache
+
+// RT context detection
+#define SYS_HAS_IN_RT_CONTEXT      1
+
+// Include CMSIS for __get_IPSR()
+#include "stm32f4xx.h"
+
+// Implementation
+inline bool sys_platform_in_rt_context() noexcept {
+  // Check if in interrupt (IPSR != 0)
+  if (__get_IPSR() != 0) {
+    return true;
+  }
+  
+  // Could also check task priority (FreeRTOS)
+  // #include "FreeRTOS.h"
+  // return (uxTaskPriorityGet(NULL) >= RT_PRIORITY_THRESHOLD);
+  
+  return false;
+}
