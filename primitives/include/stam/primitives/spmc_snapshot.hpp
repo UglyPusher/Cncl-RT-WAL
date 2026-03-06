@@ -8,6 +8,7 @@
 #include "stam/sys/sys_align.hpp"       // SYS_CACHELINE_BYTES, SYS_CACHELINE_ALIGN
 #include "stam/sys/sys_compiler.hpp"   // SYS_FORCEINLINE, SYS_COMPILER_MSVC
 #include "stam/sys/sys_preemption.hpp" // stam::sys::preemption_disable/enable
+#include "stam/sys/sys_topology.hpp"
 
 namespace stam::primitives {
 
@@ -347,6 +348,8 @@ private:
 
 template <typename T, uint32_t N>
 class SPMCSnapshot final {
+    static_assert(!stam::sys::kSystemTopologyIsSmp,
+                  "SPMCSnapshot is UP-only. In SMP builds use SPMCSnapshotSmp.");
 public:
     SPMCSnapshot() = default;
 

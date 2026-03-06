@@ -88,27 +88,89 @@ StateChannel<T, N>
 
 ---
 
-## 4. Порты (InPort / OutPort)
+## 4. Порты, PortName и BindResult
 
-```
-OutPort<T>   // writer-handle; используется производителем
-InPort<T>    // reader-handle; используется потребителем
-```
+### 4.1 Типы портов
+
+Четыре типа портов, строго типизированных по виду канала и направлению:
+
+| Тип | Канал | Направление | RT-метод |
+|-----|-------|-------------|----------|
+| `EventOutPort<T>` | `EventChannel` | writer | `push(T) → bool` |
+| `EventInPort<T>`  | `EventChannel` | reader | `pop(T&) → bool` |
+| `StateOutPort<T>` | `StateChannel` | writer | `publish(T) → void` |
+| `StateInPort<T>`  | `StateChannel` | reader | `try_read(T&) → bool` |
 
 **Природа:**
-- Порт — лёгкий handle (reference-wrapper) на Writer или Reader примитива.
+- Порт — лёгкий handle (wrapper) на Writer или Reader примитива.
 - Порт не владеет хранилищем канала. Буфер принадлежит каналу.
-- Порты non-copyable в v1 (роль writer/reader уникальна и единственна).
+- Порты non-copyable (роль writer/reader уникальна и единственна).
+- Тип порта является документацией: компилятор запрещает `push()` на `StateOutPort<T>`.
 
-**Объявление:**
-- Payload-объект задачи объявляет порты как public-поля (port-slots).
-- Имя поля используется при вызове `assign_port()` в bootstrap-фазе.
+### 4.2 PortName
 
-**Пример объявления в payload:**
+`PortName` — 4-символьный идентификатор порта, хранится как `uint32_t` (fourcc). Алфавит: `[A-Z0-9_]`.
+
+```cpp
+struct PortName {
+    uint32_t value;
+    constexpr explicit PortName(const char (&s)[5]) noexcept
+        : value(uint32_t(s[0])<<24 | uint32_t(s[1])<<16 | uint32_t(s[2])<<8 | s[3])
+    {}
+    constexpr bool operator==(PortName o) const noexcept { return value == o.value; }
+};
+```
+
+Сравнение `PortName` — одна инструкция (`uint32_t` compare). Нет строковых операций в bootstrap.
+
+### 4.3 BindResult
+
+```cpp
+enum class BindResult : uint8_t {
+    ok,
+    payload_has_no_ports,  // bind_port_fn == nullptr в TaskWrapperRef
+    unknown_port,          // PortName не распознан в payload
+    type_mismatch,         // TypeErasedHandle несёт не тот тип (debug-assert в release)
+    already_bound,         // порт уже привязан (rebind запрещён в v1)
+};
+```
+
+### 4.4 Объявление в payload
+
+Payload объявляет порты как public-поля и реализует `bind_port()`:
+
 ```cpp
 struct SensorPayload {
-    OutPort<SensorData>  sensor_out;   // writer
-    InPort<ControlData>  control_in;   // reader
+    // compile-time PortName-константы
+    static constexpr PortName SOUT{"SOUT"};
+    static constexpr PortName CINP{"CINP"};
+
+    EventOutPort<SensorData>  sensor_out;
+    StateInPort<CtrlData>     ctrl_in;
+
+    // Опциональный метод — если отсутствует, bind_port_fn в TaskWrapperRef = nullptr
+    BindResult bind_port(PortName name, TypeErasedHandle h) noexcept {
+        if (name == SOUT) return sensor_out.bind(h);
+        if (name == CINP) return ctrl_in.bind(h);
+        return BindResult::unknown_port;
+    }
+};
+```
+
+`bind_port()` — опциональный метод payload. Задачи без каналов его не реализуют.
+
+### 4.5 TypeErasedHandle
+
+`TypeErasedHandle` — type-erased handle на Writer или Reader примитива. Несёт `void*` и `type_id`
+для debug-валидации. Детали реализации `type_id_of<H>()` (без RTTI) — отдельный документ.
+
+```cpp
+struct TypeErasedHandle {
+    void*    ptr;
+    uint32_t type_id;  // compile-time id типа, для debug-assert
+
+    template<typename H>
+    BindResult bind_into(H& port) noexcept;  // проверяет type_id, записывает handle в порт
 };
 ```
 
@@ -122,27 +184,42 @@ struct SensorPayload {
 
 ### 5.1 DECLARE — объявление слотов в payload
 
-Payload задачи объявляет ожидаемые порты как public-поля типа `InPort<T>` / `OutPort<T>`.
-Это задаёт имя, тип и направление порта.
+Payload задачи объявляет ожидаемые порты как public-поля одного из типов:
+`EventOutPort<T>`, `EventInPort<T>`, `StateOutPort<T>`, `StateInPort<T>`.
+Это задаёт имя, тип данных `T`, вид канала и направление порта.
 
 ### 5.2 ASSIGN — привязка в bootstrap-фазе
 
-Bootstrap вызывает `registry.assign_port(task_name, port_name, channel, side)`.
-Реестр инжектирует Writer/Reader-handle примитива в соответствующий слот payload.
+Bootstrap вызывает `registry.assign_port(task_desc, PortName, channel, side) → BindResult`.
+
+Цепочка вызовов:
+```
+registry.assign_port(task_desc, PortName{"SOUT"}, sensor_ch, writer_side)
+  → wrapper_ref.bind_port_fn == nullptr?  → BindResult::payload_has_no_ports
+  → wrapper_ref.bind_port_fn(obj, PortName{"SOUT"}, TypeErasedHandle{...})
+      → payload.bind_port(PortName{"SOUT"}, handle)
+          → sensor_out.bind(handle)  → channel помечает writer как bound
+          → BindResult::ok
+```
+
+`assign_port()` возвращает `BindResult` немедленно. Ошибка видна bootstrap-коду до `seal()`.
 
 **Инварианты ASSIGN:**
 - Происходит **до** `seal()`.
 - Один `assign_port()` — один порт — один слот.
-- Повторный `assign_port()` (rebind) до `seal()` — запрещён в v1.
+- Повторный `assign_port()` (rebind) до `seal()` — запрещён в v1 (`BindResult::already_bound`).
 - После `seal()` — любые `assign_port()` запрещены.
 
 ### 5.3 SEAL — валидация конфигурации
 
 `seal()` — единственный момент структурной валидации всей системы каналов.
 
+Канал реализует метод `is_fully_bound() noexcept → bool`:
+- `EventChannel`: `writer_bound && reader_bound`
+- `StateChannel<T,N>`: `writer_bound && readers_bound_count == N`
+
 **Что проверяет `seal()` для каналов:**
-- Для каждого `EventChannel<T, C, P>`: `writers_bound == 1` И `readers_bound == 1`
-- Для каждого `StateChannel<T, N>`: `writers_bound == 1` И `readers_bound == N`
+- Для каждого канала: `channel.is_fully_bound() == true`; иначе → `SealError` с именем канала и причиной.
 - Любой незаполненный порт (слот без handle) → `SealError` с указанием канала и причины.
 
 `seal()` проверяет **структурную** корректность графа. Наличие фактически опубликованных данных не проверяется (это runtime-семантика).
@@ -220,7 +297,7 @@ RT-код использует `port.push()` / `port.pop()` / `port.publish()` /
 | Вызов `writer()` примитива более одного раза | Нарушает контракт единственного producer (1W) |
 | Вызов `reader()` у `EventChannel` более одного раза | Нарушает SPSC-контракт (ровно 1 reader) |
 | Вызов `reader()` у `StateChannel<T, N>` более `N` раз | Нарушает контракт `StateChannel<T, N>` |
-| Создание копии `InPort` / `OutPort` | non-copyable; нарушает уникальность роли |
+| Создание копии порта (`EventOutPort`, `EventInPort`, `StateOutPort`, `StateInPort`) | non-copyable; нарушает уникальность роли writer/reader |
 | `StateChannel<T, N>` с `N` > реального числа readers (при корректном `seal()`) | `SealError` (`readers_bound < N`) |
 | `StateChannel<T, N>` с `N` < реального числа readers | SealError (`readers_bound > N`) |
 | Параллельный `publish()` из двух producer-задач | Нарушает контракт 1-writer; UB в примитиве |

@@ -9,6 +9,10 @@
 #define SYS_STRICT_RT              1
 #define SYS_HAS_DATA_CACHE         1   // STM32F4 has optional D-cache
 
+// Optional topology selection for compile-time primitive gating:
+//   define STAM_SYSTEM_TOPOLOGY_SMP to forbid UP-only primitives.
+// #define STAM_SYSTEM_TOPOLOGY_SMP   1
+
 // RT context detection
 #define SYS_HAS_IN_RT_CONTEXT      1
 
