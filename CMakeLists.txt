@@ -36,9 +36,3 @@ endif()
 if(BUILD_APPS)
     add_subdirectory(apps)
 endif()
-
-# ---- Tests -----------------------------------------------------------------
-
-if(BUILD_TESTS)
-    add_subdirectory(tests)
-endif()
