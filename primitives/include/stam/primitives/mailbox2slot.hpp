@@ -7,6 +7,7 @@
 #include <type_traits>
 #include "stam/sys/sys_align.hpp"       // SYS_CACHELINE_BYTES
 #include "stam/sys/sys_preemption.hpp"  // sys_preemption_disable(), sys_preemption_enable()
+#include "stam/sys/sys_topology.hpp"
 
 namespace stam::primitives {
 
@@ -320,6 +321,8 @@ private:
 
 template <typename T>
 class Mailbox2Slot final {
+    static_assert(!stam::sys::kSystemTopologyIsSmp,
+                  "Mailbox2Slot is UP-only. In SMP builds use Mailbox2SlotSmp.");
 public:
     Mailbox2Slot() noexcept {
         // Redundant guard: enforce protocol-defined initial state at wrapper level.

@@ -2,29 +2,115 @@
 
 > **Status:** active R&D · contracts-first · License: MIT
 
-A C++ library of RT and non-RT components for embedded/industrial systems, built around strict domain separation and explicit contracts. Includes a *brewery control* reference application as a real-world demonstration.
+STAM is a C++ execution architecture and component model for deterministic real-time systems.
+It is **not** an RTOS kernel replacement.
 
-**Core principle:**
-- **RT domain** — bounded, deterministic, no-alloc, no syscalls, no blocking.
-- **non-RT domain** — persistence, analytics, diagnostics; everything expensive and potentially unpredictable.
+STAM defines how to structure applications from RT and non-RT components connected by explicit channels with formal contracts.
 
----
+## Why not just FreeRTOS
+
+FreeRTOS provides a scheduler, synchronization primitives, and IPC queues.
+It does not define application architecture.
+
+A typical RTOS application grows into this:
+
+```
+ISR → queue → task → mutex → shared state → more mutexes → timing chaos
+```
+
+Problems: implicit memory model, unbounded jitter, no formal progress guarantees,
+RT and non-RT logic mixed in the same tasks.
+
+STAM is an answer to this. It defines:
+
+- **explicit domain separation** — RT and non-RT responsibilities are separated by architecture and enforced by component boundaries
+- **semantic channels** — IPC is not a container; it carries a threading model, memory ordering, and progress contract
+- **contracts instead of conventions** — happens-before, misuse scenarios, and invariants are specified, not implied
+
+## How to build systems with STAM
+
+1. Decompose the problem into processes, processes into subprocesses
+2. Identify **control points** — write an RT controller for each
+3. Identify **data sources** (sensors, inputs) — wrap each as a component
+4. Connect everything via typed channels
+5. Non-RT side (logging, analytics, config) drains from the same channels
+
+Result: a system where every communication path has a defined contract and every domain boundary is explicit.
+
+## What STAM is for
+
+Embedded and industrial control systems where:
+
+- deterministic RT behavior is required
+- RT and non-RT responsibilities must be strictly separated
+- communication semantics must be explicit and analyzable
 
 ## Target platforms
 
 | Architecture | Examples |
 |---|---|
-| ARM Cortex-M | STM32, etc. |
+| ARM Cortex-M | STM32 and similar |
 | ARM Cortex-A | embedded Linux, Raspberry Pi |
 | x86/x64 | PC / industrial controllers |
 
----
+## Execution environments
+
+STAM can run:
+
+- on bare metal
+- on top of an RTOS
+- on SMP systems
+
+## Core architectural rule
+
+Two domains are separated by design.
+
+**RT domain**
+- bounded deterministic execution
+- no allocations
+- no syscalls
+- no blocking
+- no locks
+- no IO
+- explicit invariants and contracts
+
+**non-RT domain**
+- persistence
+- logging
+- analytics
+- diagnostics
+- configuration
+- everything expensive or unpredictable
+
+## Communication model
+
+Channels are typed by semantics, not by implementation.
+Each variant exists in a UP (single-core / same-core) and SMP-safe form:
+
+| Semantic | UP | SMP-safe |
+|---|---|---|
+| Event stream | `SPSCRing` | `SPSCRing` |
+| Snapshot publish | `DoubleBuffer`, `Mailbox2Slot` | `DoubleBufferSeqLock`, `Mailbox2SlotSmp` |
+| Multi-reader snapshot | `SPMCSnapshot` | `SPMCSnapshotSmp` |
+
+UP variants rely on same-core or preemption-controlled deployment.
+SMP variants use seqlock / claim-verify patterns and are safe across cores.
+
+Every channel carries an explicit contract:
+
+- threading model
+- memory ordering (happens-before, linearization points)
+- progress guarantees (wait-free / bounded completion)
+- misuse scenarios and UB model
+- RT path budget notes
+
+Contract documentation: [`primitives/docs/`](primitives/docs/)
 
 ## Repository structure
 
 ```
 stam/
-├── primitives/          # RT-safe lock-free primitives (SPSCRing, DoubleBuffer, …)
+├── primitives/          # RT-safe lock-free IPC primitives
 │   ├── include/stam/
 │   │   ├── primitives/  # SPSCRing, DoubleBuffer, SPMCSnapshot, Mailbox2Slot, CRC32_RT
 │   │   └── sys/         # portability layer (arch, compiler, fence, preemption)
@@ -32,83 +118,56 @@ stam/
 ├── stam-rt-lib/         # RT execution model (TaskWrapper, SysRegistry)
 │   └── include/
 │       ├── exec/tasks/  # taskwrapper.hpp
-│       └── model/       # tags.hpp (concepts: Steppable, RtPayload, …)
-├── modules/             # Non-RT components (logging, …)
+│       └── model/       # tags.hpp (concepts: Steppable, RtPayload, ...)
+├── modules/             # non-RT infrastructure (logging, persistence, etc.)
 ├── apps/
 │   ├── brewery/         # Reference application: RT control + non-RT logging
-│   ├── demo/
-│   │   └── trivial_tasks/ # Minimal RT/non-RT interaction demo
+│   ├── demo/trivial_tasks/  # Minimal RT/non-RT interaction demo
 │   └── minimal/         # Minimal boot example
 └── docs/
 ```
 
-**Hard rule:** `primitives/` and `stam-rt-lib/` do not depend on `modules/`. The reverse is allowed.
+Separation rule: `primitives/` and `stam-rt-lib/` do not depend on `modules/`; reverse dependencies are allowed.
 
----
+## Architectural layers
 
-## Architecture
+**RT primitives** (`primitives/`): lock-free communication primitives with strict RT contracts.
+No allocations, no locks, O(1) operations, acquire/release within the C++ memory model.
 
-### RT Components (hard-RT path)
-- no allocations, no syscalls/IO, no locks/waits
-- bounded O(1) operations
-- acquire/release strictly per C++ memory model
-- explicit invariants and misuse contracts per component
+**Execution model** (`stam-rt-lib/`): RT task/component wiring and scheduler-facing abstractions.
+Defines how tasks are registered, scheduled, and observed.
 
-Primitives: `SPSCRing`, `DoubleBuffer`, `SPMCSnapshot`, `Mailbox2Slot`, `CRC32_RT`
-
-### Non-RT Components
-- drain RT-ring → staging queue / in-memory WAL → sink (file/flash/uart)
-- storage durability policies (fsync/flush, batching, backpressure)
-- analytics / diagnostics / UI / environment simulators
-
-### HAL (Hardware Abstraction Layer)
-Isolates platform-specific code: tick source, GPIO/ADC/SPI/I2C/UART, cache maintenance, watchdog, failsafe outputs. RT code depends on HAL through a minimal interface only.
-
----
+**non-RT modules** (`modules/`): drain RT ring → staging queue / in-memory WAL → sink (file/flash/uart).
+Storage reliability policies, analytics, diagnostics, configuration.
 
 ## Reference application: Brewery Control
 
-**RT loop:** temperature sensors → PID/bang-bang control → heater/cooler/pump/valve actuators → telemetry snapshot + lossy event log → non-RT.
+RT loop: temperature sensors → PID/bang-bang control → heater/cooler/pump/valve actuators
+→ telemetry snapshot + lossy event log → non-RT.
 
-**Safety scenarios covered:** overheat, dry-run, sensor failure, watchdog timeout, escalation FSM (WARN → LIMIT → SHED → PANIC).
+Safety scenarios covered: overheating, dry-run, sensor failure, watchdog timeout,
+escalation FSM (WARN → LIMIT → SHED → PANIC).
 
-**non-RT:** logging, persistence, config/calibration, metrics export, trend analysis.
-
----
-
-## Component contracts
-
-Every primitive and component carries a formal contract covering:
-
-- Scope / semantic model
-- Compile-time and runtime invariants
-- Threading model preconditions
-- Memory ordering (happens-before), linearization points
-- Progress guarantees (wait-free / bounded completion)
-- Misuse scenarios and UB model
-- RT path budget notes
-
-Contract docs: [`primitives/docs/`](primitives/docs/)
-
----
+non-RT side: logging, persistence, config/calibration, metrics export, trend analysis.
 
 ## Safety model
 
-**Safety contract** defines: safe state, fault model, escalation FSM, ownership of safety lines (no re-entrancy), watchdog strategy (internal + external), shutdown policy.
+**Safety contract** defines: safe state, fault model, escalation FSM, ownership of safety lines
+(no re-entrancy), watchdog strategy (internal + external), shutdown policy.
 
-**Degradation contract** defines: which events are dropped first, which are *never* dropped (PANIC/SAFETY), and recovery conditions.
-
----
+**Degradation contract** defines: which events are dropped first, which are never dropped
+(PANIC/SAFETY), and recovery conditions.
 
 ## Implementation principles (non-negotiable)
 
-**RT path:** `noexcept`, no malloc/new/delete, no syscalls/IO/sockets, no locks/waits/condvars. Failures expressed as return values or counters.
+**RT path:** `noexcept`, no malloc/new/delete, no syscalls/IO/sockets, no locks/waits/condvars.
+Errors expressed through return values or counters.
 
-**Portability:** single codebase; configuration via `#define` / optional override header (`user_sys_config.hpp`). CPU fences and cache maintenance are opt-in and documented.
+**Portability:** single codebase; configuration via `#define` / optional override header
+(`user_sys_config.hpp`). CPU fences and cache maintenance are opt-in and documented.
 
-**Observability:** telemetry via snapshot (`DoubleBuffer`), events via lossy queue (`SPSCRing`), degradation level as an explicit signal + metrics.
-
----
+**Observability:** telemetry via snapshot channels, events via lossy queue (`SPSCRing`),
+degradation level as an explicit signal + metrics.
 
 ## Roadmap
 
@@ -119,12 +178,11 @@ Contract docs: [`primitives/docs/`](primitives/docs/)
 - [ ] PC/Linux simulation + unit/property tests
 - [ ] Port to STM32
 
----
+## Getting started
 
-## Quick start
+Not yet formalized as a single documented flow.
+Interim entry points:
 
-Not yet available as a single documented flow.  
-Interim entry points are:
-- `apps/minimal` for bootstrapping
-- `apps/demo/trivial_tasks` for RT/non-RT interaction
-- `apps/brewery` for the reference scenario
+- `apps/minimal` — basic boot
+- `apps/demo/trivial_tasks` — minimal RT/non-RT interaction
+- `apps/brewery` — full reference scenario

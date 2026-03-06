@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <type_traits>
 #include "stam/sys/sys_align.hpp"   // SYS_CACHELINE_BYTES, SYS_CACHELINE_ALIGN
+#include "stam/sys/sys_topology.hpp"
 
 namespace stam::primitives {
 
@@ -190,6 +191,8 @@ private:
 
 template <typename T>
 class DoubleBuffer final {
+    static_assert(!stam::sys::kSystemTopologyIsSmp,
+                  "DoubleBuffer is UP-only. In SMP builds use DoubleBufferSeqLock.");
 public:
     DoubleBuffer() = default;
 
