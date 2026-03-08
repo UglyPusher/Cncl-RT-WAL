@@ -1,7 +1,7 @@
 # SYS_PORTABILITY.md
 Version: v0.1 (portable config layer)
 
-This document describes how to port and configure the ЫНЫ/RT utility layer across
+This document describes how to port and configure the SYS/RT utility layer across
 compilers, CPUs, and RTOS/OS environments without modifying library source code.
 Configuration is performed via **preprocessor defines** (CMake/toolchain) and an
 optional **user_sys_config.hpp** override file.
