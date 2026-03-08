@@ -14,12 +14,15 @@
 
 #include <atomic>
 #include <cassert>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <thread>
 #include <vector>
 #include <chrono>
+#include <sys/wait.h>
+#include <unistd.h>
 
 using namespace stam::primitives;
 
@@ -69,6 +72,22 @@ struct LargePod {
         return std::memcmp(data, o.data, sizeof(data)) == 0;
     }
 };
+
+template <class Fn>
+bool expect_child_abort(Fn&& fn) {
+    const pid_t pid = ::fork();
+    EXPECT(pid >= 0);
+
+    if (pid == 0) {
+        fn();
+        std::fflush(stdout);
+        _Exit(0);
+    }
+
+    int status = 0;
+    EXPECT(::waitpid(pid, &status, 0) == pid);
+    return WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
+}
 
 // ---------------------------------------------------------------------------
 // Static / compile-time checks
@@ -260,6 +279,25 @@ TEST(test_refcnt_zero_after_reads) {
     for (uint32_t i = 0; i < SPMCSnapshotCore<Pod32, 2>::K; ++i) {
         EXPECT(ch.core().refcnt[i].load() == 0u);
     }
+}
+
+TEST(test_writer_guard_fail_fast) {
+    const bool aborted = expect_child_abort([] {
+        SPMCSnapshot<Pod32, 2> ch;
+        (void)ch.writer();
+        (void)ch.writer();
+    });
+    EXPECT(aborted);
+}
+
+TEST(test_reader_guard_fail_fast) {
+    const bool aborted = expect_child_abort([] {
+        SPMCSnapshot<Pod32, 2> ch;
+        (void)ch.reader();
+        (void)ch.reader();
+        (void)ch.reader();
+    });
+    EXPECT(aborted);
 }
 
 // ---------------------------------------------------------------------------
@@ -519,6 +557,8 @@ int spmc_snapshot_tests() {
     RUN(test_large_pod);
     RUN(test_busy_mask_zero_after_all_reads);
     RUN(test_refcnt_zero_after_reads);
+    RUN(test_writer_guard_fail_fast);
+    RUN(test_reader_guard_fail_fast);
 
     std::printf("\n--- multi-threaded stress ---\n");
     RUN(test_spmc_n1_stress_no_torn_read);

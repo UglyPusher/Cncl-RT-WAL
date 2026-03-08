@@ -18,6 +18,18 @@ Designed for:
 
 ---
 
+## 0.1 UP Init Contract
+
+Initialization and wiring are defined as **UP init**:
+
+- all `writer()` / `reader()` issuance and bind steps are executed in a single-thread bootstrap phase;
+- scheduler is not running yet;
+- parallel/multi-core init for the same primitive instance is not allowed.
+
+Handle issuance guards in code rely on this contract.
+
+---
+
 ## 1. Semantic Model
 
 `DoubleBuffer` implements a **last-writer-wins snapshot** model:

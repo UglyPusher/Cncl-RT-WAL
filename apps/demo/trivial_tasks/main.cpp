@@ -3,7 +3,7 @@
 
 #include "modules/demo/trivial_rt_task.hpp"
 #include "modules/demo/trivial_nonrt_task.hpp"
-#include "exec/tasks/taskwrapper.hpp"
+#include "exec/tasks/task_wrapper.hpp"
 
 using namespace stam;
 

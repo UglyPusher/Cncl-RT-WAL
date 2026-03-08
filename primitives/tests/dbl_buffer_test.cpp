@@ -20,10 +20,13 @@
 
 #include <atomic>
 #include <cassert>
+#include <csignal>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <thread>
+#include <sys/wait.h>
+#include <unistd.h>
 
 using namespace stam::primitives;
 
@@ -72,6 +75,22 @@ struct LargePod {
         return std::memcmp(data, o.data, sizeof(data)) == 0;
     }
 };
+
+template <class Fn>
+bool expect_child_abort(Fn&& fn) {
+    const pid_t pid = ::fork();
+    EXPECT(pid >= 0);
+
+    if (pid == 0) {
+        fn();
+        std::fflush(stdout);
+        _Exit(0);
+    }
+
+    int status = 0;
+    EXPECT(::waitpid(pid, &status, 0) == pid);
+    return WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
+}
 
 // ---------------------------------------------------------------------------
 // Static / compile-time checks
@@ -210,6 +229,24 @@ TEST(test_slot_alternates) {
     EXPECT(db.core().published.load() == 0u);
     writer.write({3, 3});
     EXPECT(db.core().published.load() == 1u);
+}
+
+TEST(test_writer_guard_fail_fast) {
+    const bool aborted = expect_child_abort([] {
+        DoubleBuffer<Pod32> db;
+        (void)db.writer();
+        (void)db.writer();
+    });
+    EXPECT(aborted);
+}
+
+TEST(test_reader_guard_fail_fast) {
+    const bool aborted = expect_child_abort([] {
+        DoubleBuffer<Pod32> db;
+        (void)db.reader();
+        (void)db.reader();
+    });
+    EXPECT(aborted);
 }
 
 // ---------------------------------------------------------------------------
@@ -360,6 +397,8 @@ int dbl_buffer_tests() {
     RUN(test_interleaved_write_read);
     RUN(test_large_pod);
     RUN(test_slot_alternates);
+    RUN(test_writer_guard_fail_fast);
+    RUN(test_reader_guard_fail_fast);
 
     std::printf("\n--- multi-threaded stress ---\n");
     RUN(test_spsc_stress_no_torn_read);

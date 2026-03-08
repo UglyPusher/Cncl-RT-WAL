@@ -11,9 +11,12 @@
 
 #include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <thread>
+#include <sys/wait.h>
+#include <unistd.h>
 
 using namespace stam::primitives;
 
@@ -44,6 +47,22 @@ struct Pod32 {
     int32_t x{0};
     int32_t y{0};
 };
+
+template <class Fn>
+bool expect_child_abort(Fn&& fn) {
+    const pid_t pid = ::fork();
+    EXPECT(pid >= 0);
+
+    if (pid == 0) {
+        fn();
+        std::fflush(stdout);
+        _Exit(0);
+    }
+
+    int status = 0;
+    EXPECT(::waitpid(pid, &status, 0) == pid);
+    return WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
+}
 
 TEST(test_concepts) {
     static_assert(SnapshotWriter<SPMCSnapshotSmpWriter<Pod32, 2>, Pod32>,
@@ -86,6 +105,25 @@ TEST(test_refcnt_and_busy_mask_cleanup) {
     for (uint32_t i = 0; i < ch.core().K; ++i) {
         EXPECT(ch.core().refcnt[i].load(std::memory_order_acquire) == 0u);
     }
+}
+
+TEST(test_writer_guard_fail_fast) {
+    const bool aborted = expect_child_abort([] {
+        SPMCSnapshotSmp<Pod32, 2> ch;
+        (void)ch.writer();
+        (void)ch.writer();
+    });
+    EXPECT(aborted);
+}
+
+TEST(test_reader_guard_fail_fast) {
+    const bool aborted = expect_child_abort([] {
+        SPMCSnapshotSmp<Pod32, 2> ch;
+        (void)ch.reader();
+        (void)ch.reader();
+        (void)ch.reader();
+    });
+    EXPECT(aborted);
 }
 
 TEST(test_stress_n1_no_torn_read) {
@@ -212,6 +250,8 @@ void spmc_snapshot_smp_tests() {
     RUN(test_try_read_before_publish_returns_false);
     RUN(test_write_alias_and_publish_visible);
     RUN(test_refcnt_and_busy_mask_cleanup);
+    RUN(test_writer_guard_fail_fast);
+    RUN(test_reader_guard_fail_fast);
 
     std::printf("\n--- multi-threaded stress ---\n");
     RUN(test_stress_n1_no_torn_read);
@@ -220,4 +260,3 @@ void spmc_snapshot_smp_tests() {
 
     std::printf("\n  passed: %d / %d\n\n", g_passed, g_total);
 }
-

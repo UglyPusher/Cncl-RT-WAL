@@ -1,7 +1,9 @@
 #pragma once
 
 #include "stam/stam.hpp"
+#include <cassert>
 #include <atomic>
+#include <cstdlib>
 #include <cstdint>
 #include <cstddef>
 #include <type_traits>
@@ -42,12 +44,12 @@ namespace stam::primitives {
  *               1–2 atomic loads + payload copy + 1 re-verify load; no RMW
  *               on fast successful path.
  *
- * MISUSE:
- *  - More than 1 simultaneous writer → undefined behavior.
- *  - More than 1 simultaneous reader → undefined behavior.
- *  - No runtime guard is provided; enforcement is the caller's responsibility.
+ * MISUSE GUARDS:
+ *  - writer() may be issued at most once per primitive lifetime.
+ *  - reader() may be issued at most once per primitive lifetime.
+ *  - Exceeding either limit triggers fail-fast (assert + abort).
  *
- * SPEC: primitives/docs/Mailbox2SlotSmp - RT Contract & Invariants.md (Rev 1.0)
+ * SPEC: primitives/docs/Mailbox2SlotSmp - RT Contract & Invariants.md (Rev 1.1)
  */
 
 template <typename T> class Mailbox2SlotSmpWriter;
@@ -257,20 +259,28 @@ private:
 template <typename T>
 class Mailbox2SlotSmp final {
 public:
+    static constexpr uint32_t max_readers = 1u;
+
     Mailbox2SlotSmp() = default;
 
     Mailbox2SlotSmp(const Mailbox2SlotSmp&)            = delete;
     Mailbox2SlotSmp& operator=(const Mailbox2SlotSmp&) = delete;
 
-    // NOTE: writer() and reader() each return a new handle to the shared Core.
-    // Calling writer() more than once violates the 1P/1C contract.
-    // The same applies to reader(). No runtime guard; enforcement is caller's.
-
     [[nodiscard]] Mailbox2SlotSmpWriter<T> writer() noexcept {
+        if (issued_writer_) {
+            assert(false && "Mailbox2SlotSmp::writer() already issued");
+            std::abort();
+        }
+        issued_writer_ = true;
         return Mailbox2SlotSmpWriter<T>(core_);
     }
 
     [[nodiscard]] Mailbox2SlotSmpReader<T> reader() noexcept {
+        if (issued_reader_) {
+            assert(false && "Mailbox2SlotSmp::reader() already issued");
+            std::abort();
+        }
+        issued_reader_ = true;
         return Mailbox2SlotSmpReader<T>(core_);
     }
 
@@ -279,6 +289,8 @@ public:
 
 private:
     Mailbox2SlotSmpCore<T> core_;
+    bool                   issued_writer_ = false;
+    bool                   issued_reader_ = false;
 };
 
 } // namespace stam::primitives

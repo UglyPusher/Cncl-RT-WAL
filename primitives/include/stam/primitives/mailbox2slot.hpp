@@ -1,7 +1,9 @@
 #pragma once
 
 #include "stam/stam.hpp"
+#include <cassert>
 #include <atomic>
+#include <cstdlib>
 #include <cstdint>
 #include <cstddef>
 #include <type_traits>
@@ -50,11 +52,10 @@ namespace stam::primitives {
  *    See Known Limitations in spec (Revision 1.4).
  *
  * MISUSE:
- *  - Violations of the above contract result in undefined behavior.
- *  - Mailbox2Slot::writer() / reader() may be called multiple times, each
- *    returning a new handle to the same Core. Creating more than one Writer
- *    or more than one Reader for the same Core violates the 1P/1C contract.
- *    No runtime guard is provided to keep the RT path minimal.
+ *  - writer() may be issued at most once per primitive lifetime.
+ *  - reader() may be issued at most once per primitive lifetime.
+ *  - Exceeding either limit triggers fail-fast (assert + abort).
+ *  - Other contract violations result in undefined behavior.
  *
  * SPEC: docs/contracts/Mailbox2Slot.md (Revision 1.4)
  */
@@ -324,6 +325,8 @@ class Mailbox2Slot final {
     static_assert(!stam::sys::kSystemTopologyIsSmp,
                   "Mailbox2Slot is UP-only. In SMP builds use Mailbox2SlotSmp.");
 public:
+    static constexpr uint32_t max_readers = 1u;
+
     Mailbox2Slot() noexcept {
         // Redundant guard: enforce protocol-defined initial state at wrapper level.
         // Keeps behavior correct even if Core initialization path changes.
@@ -334,17 +337,21 @@ public:
     Mailbox2Slot(const Mailbox2Slot&)            = delete;
     Mailbox2Slot& operator=(const Mailbox2Slot&) = delete;
 
-    // NOTE: writer() and reader() each return a new handle to the shared Core.
-    // Calling writer() more than once yields two Writer objects for the same
-    // Core — this violates the 1P/1C contract and results in undefined
-    // behavior. The same applies to reader(). No runtime guard is provided;
-    // enforcement is the caller's responsibility.
-
     [[nodiscard]] Mailbox2SlotWriter<T> writer() noexcept {
+        if (issued_writer_) {
+            assert(false && "Mailbox2Slot::writer() already issued");
+            std::abort();
+        }
+        issued_writer_ = true;
         return Mailbox2SlotWriter<T>(core_);
     }
 
     [[nodiscard]] Mailbox2SlotReader<T> reader() noexcept {
+        if (issued_reader_) {
+            assert(false && "Mailbox2Slot::reader() already issued");
+            std::abort();
+        }
+        issued_reader_ = true;
         return Mailbox2SlotReader<T>(core_);
     }
 
@@ -353,6 +360,8 @@ public:
 
 private:
     Mailbox2SlotCore<T> core_{};
+    bool                issued_writer_ = false;
+    bool                issued_reader_ = false;
 };
 
 } // namespace stam::primitives

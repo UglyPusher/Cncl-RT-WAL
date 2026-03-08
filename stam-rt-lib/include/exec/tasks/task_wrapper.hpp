@@ -3,7 +3,6 @@
 #include <cassert>
 #include <concepts>
 #include "model/tags.hpp"
-#include "stam/stam.hpp"
 
 
 namespace stam::exec::tasks {
@@ -11,9 +10,13 @@ namespace stam::exec::tasks {
 using stam::model::tick_t;
 using stam::model::heartbeat_word_t;
 
-template <stam::model::Steppable Payload>
+template <class Payload>
+requires stam::model::Steppable<Payload>
 class TaskWrapper {
 public:
+    // TaskWrapper is a thin runtime adapter between scheduler and payload:
+    // it executes step/hooks and updates heartbeat. Port binding is intentionally
+    // outside wrapper (bootstrap phase), so runtime stays minimal and deterministic.
     explicit TaskWrapper(Payload& payload) noexcept
         : payload_(payload)
     {}
@@ -43,6 +46,14 @@ public:
     }
     void done() noexcept {
         if constexpr (requires(Payload& p) { p.done(); }) payload_.done();
+    }
+
+    bool is_fully_bound() const noexcept {
+        if constexpr (requires(const Payload& p) { { p.is_fully_bound() } noexcept -> std::same_as<bool>; }) {
+            return payload_.is_fully_bound();
+        } else {
+            return true;
+        }
     }
 
 private:
