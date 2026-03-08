@@ -1,337 +1,104 @@
 # Layering Model
 
-This document defines the architectural layering model of the RT framework.
+This file defines the repository layering used for development and review.
+It is aligned with current code layout and CMake targets.
 
-The layering model is a **design constraint**, not a cosmetic organization rule.
-It exists to preserve:
+## 1. Layers (Low -> High)
 
-- Real-time determinism
-- Portability
-- Replaceability of subsystems
-- Safety isolation
-- Long-term maintainability
+1. `primitives`
+2. `stam-rt-lib`
+3. `modules`
+4. `apps`
 
----
+Dependency direction is only upward (high depends on low).
 
-## 1. Motivation
+## 2. Layer Responsibilities
 
-Real-time systems fail when:
+### 2.1 primitives
 
-- Non-RT behavior contaminates RT code paths
-- Platform-specific details leak into logic
-- Logging or diagnostics block execution
-- Cross-layer dependencies accumulate
+Location:
 
-Strict layering is used to prevent these failure modes.
+- `primitives/include/stam/primitives/*`
+- `primitives/include/stam/sys/*`
 
-The framework enforces separation between:
+Responsibilities:
 
-- Execution model
-- Data transport
-- Real-time logic
-- Non-real-time infrastructure
-- Hardware abstraction
-- Application logic
+- RT data-exchange primitives (`SPSC`, snapshots, mailbox, double-buffer variants)
+- portability/system headers (`sys_*`)
 
-Each layer has a single responsibility.
+Constraints:
 
----
+- deterministic API contracts for RT path
+- no dependency on `stam-rt-lib`, `modules`, `apps`
 
-## 2. Architectural Principles
+### 2.2 stam-rt-lib
 
-### 2.1 RT Isolation
+Location:
 
-The RT path must be:
+- `stam-rt-lib/include/model/*`
+- `stam-rt-lib/include/exec/*`
+- `stam-rt-lib/rtr/*`
 
-- Bounded in execution time
-- Free of dynamic allocation
-- Free of syscalls
-- Free of blocking synchronization
-- Independent of non-RT behavior
+Responsibilities:
 
-Any violation breaks the core design guarantee.
+- model contracts (`tags`, `PortName`, `BindResult`)
+- bootstrap channel binding (`ChannelWrapper`, `ChannelRef`)
+- task execution adapters (`TaskWrapper`, `TaskWrapperRef`)
+- system readiness validation (`TaskRegistry::seal`)
+- runtime stub (`stam_rtr`)
 
----
+Constraints:
 
-### 2.2 Directional Dependencies
+- may depend on `primitives`
+- must not depend on `modules` or `apps`
 
-Higher-level layers may depend only on lower-level layers.
-Lower-level layers must never depend on higher-level layers.
+### 2.3 modules
 
-## Layer Order (from lowest to highest)
-apps
-  ↓
-nonrt
-  ↓
-rt/*
-  ↓
-exec
-  ↓
-hal
-  ↓
-sys
-  ↓
-core
+Location:
 
+- `modules/logging/*`
+- `modules/demo/*`
 
-## Dependency Rule
+Responsibilities:
 
-A layer may depend only on layers listed below it.
+- reusable feature modules built on top of execution/model layer
 
-Example:
+Constraints:
 
-- `rt/*` may depend on `exec`, `hal`, `sys`, `core`
-- `exec` may depend on `hal`, `sys`, `core`
-- `core` must not depend on any other layer
+- may depend on `stam_exec` (and transitively on lower layers)
+- must not depend on `apps`
 
+### 2.4 apps
 
-This ensures:
+Location:
 
-- Deterministic transport
-- Replaceable logging
-- Safe degradation
-- Portable HAL implementation
+- `apps/minimal`
+- `apps/demo/trivial_tasks`
+- `apps/brewery`
 
----
+Responsibilities:
 
-### 2.3 Replaceability
+- integration/examples/product composition
 
-Each layer must be swappable:
+Constraints:
 
-- HAL implementations can be replaced per platform
-- Logging backends can be replaced without touching RT
-- Execution policies can change without modifying tasks
-- Applications can be replaced without modifying framework
+- may depend on all lower layers
+- must never be imported by framework layers
 
-If replacing a layer requires editing lower layers,
-the layering model is violated.
+## 3. Bootstrap vs Runtime Boundary
 
----
+System integration must follow the same phase split across layers:
 
-## 3. Layer Responsibilities
+1. bootstrap: construct, bind, register, seal
+2. runtime: scheduler/task execution only
 
-### 3.1 core
+No bind/rebind operations are allowed after successful runtime start.
 
-Minimal compile-time infrastructure:
+## 4. Review Checklist
 
-- Strong types
-- Result codes
-- Concepts
-- Static contracts
+A change is layer-safe if:
 
-Contains no platform assumptions.
-Contains no RT assumptions.
-
----
-
-### 3.2 sys (Portability Layer)
-
-Provides:
-
-- Architecture detection
-- Compiler detection
-- Cache line configuration
-- Memory fence abstraction
-- RT configuration flags
-
-It centralizes all platform variability.
-
----
-
-### 3.3 hal (Interfaces Only)
-
-Defines abstract hardware interfaces:
-
-- Tick source
-- GPIO
-- ADC
-- Watchdog
-
-It does NOT contain implementation.
-
-Platform-specific code lives in:
-
-```
-
-src/hal/<platform>/
-
-```
-
----
-
-### 3.4 exec (Execution Model)
-
-Defines:
-
-- Task abstraction
-- Execution policies (RT / non-RT)
-
-It controls *how* code executes,
-not *what* it does.
-
----
-
-### 3.5 rt/transport
-
-Provides deterministic, bounded data exchange:
-
-- SPSC ring
-- Double buffer
-
-These primitives form the only synchronization boundary
-between RT and non-RT domains.
-
-Memory ordering guarantees are centralized here.
-
----
-
-### 3.6 rt/*
-
-Reusable real-time components:
-
-- Controllers
-- FSM
-- Sensor validation
-- Logging publisher
-
-They must:
-
-- Remain bounded
-- Avoid allocation
-- Avoid blocking
-- Avoid syscalls
-
-They may depend on transport primitives,
-but never on non-RT code.
-
----
-
-### 3.7 nonrt
-
-Non-deterministic infrastructure:
-
-- Ring drain
-- Dispatcher
-- Backends
-- Analytics
-
-This layer may block, allocate, or use OS services.
-
-It must not introduce backpressure into the RT layer.
-
----
-
-### 3.8 apps
-
-Reference or production systems.
-
-Applications assemble:
-
-- HAL implementations
-- Execution policies
-- RT components
-- Non-RT infrastructure
-
-Applications must not modify framework internals.
-
----
-
-## 4. RT Path Definition
-
-The RT path consists of:
-
-- exec (RT policy)
-- rt/transport
-- rt/*
-- HAL interfaces (only their usage, not implementation)
-
-The RT path must never call:
-
-- nonrt/*
-- OS APIs
-- Blocking primitives
-- Dynamic allocation
-
-All RT-to-nonRT communication must go through transport primitives.
-
----
-
-## 5. Logging Model
-
-Logging is treated as a subsystem, not a core dependency.
-
-RT publishes:
-
-- State snapshots
-- Events
-- Diagnostic logs
-
-Non-RT consumes and persists them.
-
-The RT side does not depend on any persistence guarantee.
-
-Loss is allowed if architecturally specified.
-
----
-
-## 6. Safety Model
-
-Safety mechanisms (e.g., safety_fsm) are:
-
-- Deterministic
-- Side-effect bounded
-- Independent from logging
-
-Safety escalation must not depend on non-RT response.
-
----
-
-## 7. Extensibility Rules
-
-To add a new:
-
-### Transport primitive:
-Add under `rt/transport`.
-Do not depend on exec or nonrt.
-
-### Backend:
-Add under `nonrt/backend`.
-Must not modify RT code.
-
-### Platform:
-Implement HAL interfaces under `src/hal/<platform>`.
-
-### Application:
-Add under `apps/`.
-
-If extension requires modifying lower layers,
-the architecture must be reconsidered.
-
----
-
-## 8. Review Checklist
-
-The architecture is considered valid if:
-
-- RT code path contains no blocking or allocation
-- Non-RT stalling does not affect RT execution
-- Platform code is confined to src/hal
-- No upward dependencies exist
-- Logging can be disabled without breaking RT
-
----
-
-## 9. Summary
-
-The layering model enforces:
-
-- Determinism
-- Isolation
-- Replaceability
-- Portability
-- Safety
-
-It is not optional.
-It is the foundation of the framework.
-```
-
+- no lower layer include/link references upper layers
+- `stam-rt-lib` public headers remain independent from `modules/apps`
+- runtime path remains free from bootstrap reconfiguration logic
+- app-specific decisions stay inside `apps/*`

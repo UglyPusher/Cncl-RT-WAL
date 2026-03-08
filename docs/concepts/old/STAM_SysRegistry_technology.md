@@ -1,3 +1,15 @@
+# LEGACY NOTE
+
+This document is archived and kept for historical context.
+It may describe pre-refactor APIs (e.g., assign_port/type-erased handle pipeline, old header paths).
+
+Current source-of-truth documents are:
+- stam-rt-lib contracts: stam-rt-lib/docs/*
+- primitives contracts: primitives/docs/*
+- architecture overview: docs/architecture/*
+
+---
+
 # Технология работы разработчика с STAM System Registry v1
 
 ---

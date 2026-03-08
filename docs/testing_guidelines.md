@@ -495,7 +495,7 @@ Each test file must have a header comment:
  * - INV-2: Single consumer never sees torn writes
  * - INV-3: Capacity equation holds
  * 
- * @see docs/contracts/spsc_ring.md
+ * @see primitives/docs/SPSCRing — RT Contract & Invariants.md
  */
 ```
 
@@ -517,7 +517,10 @@ When a test fails:
 
 For new components:
 
-1. Write contract document (`docs/contracts/<component>.md`)
+1. Write contract document in one of:
+   - `primitives/docs/<Component> - RT Contract & Invariants.md`
+   - `stam-rt-lib/docs/<Component> - ... Contract ... .md`
+   - `docs/architecture/<topic>.md` for repo-level architecture
 2. Write contract tests (`tests/contracts/test_<component>_invariants.cpp`)
 3. Write failing unit tests (`tests/unit/test_<component>.cpp`)
 4. Implement component until tests pass
