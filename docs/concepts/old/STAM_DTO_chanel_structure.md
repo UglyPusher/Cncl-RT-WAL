@@ -1,3 +1,15 @@
+# LEGACY NOTE
+
+This document is archived and kept for historical context.
+It may describe pre-refactor APIs (e.g., assign_port/type-erased handle pipeline, old header paths).
+
+Current source-of-truth documents are:
+- stam-rt-lib contracts: stam-rt-lib/docs/*
+- primitives contracts: primitives/docs/*
+- architecture overview: docs/architecture/*
+
+---
+
 # Channel Structure — Контракты и инварианты (STAM v1)
 
 *Версия: v1. Источник: fixed.md (FIXED-CHAN-001..007) + сессии 00001–00019.*

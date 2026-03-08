@@ -1,3 +1,15 @@
+# THINKING NOTE
+
+This file contains architecture reasoning/discussion history.
+It is not the canonical implementation contract.
+
+Use source-of-truth docs:
+- stam-rt-lib/docs/*
+- primitives/docs/*
+- docs/architecture/*
+
+---
+
 [Сессия 0000][Оператор]
 
 Ваши соображения????

@@ -1,198 +1,70 @@
 # Dependency Graph
 
-This document defines the **strict dependency direction** of the RT framework.
+This document defines the current dependency graph of this repository.
+It reflects actual CMake wiring (not a target architecture proposal).
 
-The rules below are architectural invariants.
-Violating them breaks the design contract.
+## 1. Build Units
 
----
+Top-level order (`/src/CMakeLists.txt`):
 
-## 1. Layering Overview
+1. `primitives`
+2. `stam-rt-lib`
+3. `modules` (optional)
+4. `apps` (optional)
 
+## 2. Target-Level Graph
+
+```text
+stam_primitives (INTERFACE)
+    ↑
+stam_model (INTERFACE)
+    ↑
+stam_exec (INTERFACE)  ---->  stam_primitives
+    ↑
+stam_rtr (STATIC, optional)
+
+module_logging (STATIC)  ---->  stam_exec
+demo_trivial_tasks (STATIC) --> stam_exec
+
+app_minimal      ----> stam_exec + stam_rtr + module_logging
+app_trv_task     ----> stam_exec + stam_rtr + demo_trivial_tasks
+app_brewery      ----> stam_exec + stam_rtr + module_logging
+```
+
+## 3. Directory-Level Dependency Direction
+
+```text
 apps
   ↓
-nonrt
+modules
   ↓
-rt/*
+stam-rt-lib
   ↓
-exec
-  ↓
-hal
-  ↓
-sys
-  ↓
-core
+primitives
+```
 
+Meaning:
 
-Arrows point in the direction of allowed dependencies.
+- upper directory may depend on lower one
+- lower directory must not depend on upper one
 
-Lower layers must NOT depend on higher layers.
+## 4. Enforced / Forbidden Dependencies
 
----
+### Enforced by CMake now
 
-## 2. Layer Responsibilities
+- `stam_exec` links `stam_model` and `stam_primitives`
+- all shipped modules link `stam_exec`
+- all shipped apps link `stam_exec` and `stam_rtr`
 
-### core
-Minimal, pure C++ utilities:
-- types
-- result codes
-- concepts
-- compile-time contracts
+### Forbidden by architecture contract
 
-No platform assumptions.
-No RT assumptions.
+- `primitives` -> `stam-rt-lib`
+- `primitives` -> `modules` / `apps`
+- `stam-rt-lib` -> `modules` / `apps`
+- `modules` -> `apps`
 
----
+## 5. Notes
 
-### sys
-Portability layer:
-- compiler detection
-- architecture detection
-- cache line definitions
-- fences
-- RT configuration flags
-
-May depend on `core`.
-Must not depend on `hal`, `rt`, or `nonrt`.
-
----
-
-### hal (interfaces only)
-Hardware abstraction interfaces.
-
-Defines:
-- tick source
-- GPIO
-- ADC
-- watchdog
-
-Must not contain platform-specific implementation.
-
-Depends only on:
-- `core`
-- `sys`
-
----
-
-### exec
-Execution model:
-- task abstraction
-- RT execution policy
-- non-RT execution policy
-
-Depends on:
-- `core`
-- `sys`
-- `hal` (interfaces only)
-
-Must not depend on:
-- `rt/logging`
-- `nonrt`
-
----
-
-### rt/transport
-RT-safe data exchange primitives:
-- SPSC ring
-- double buffer
-
-Depends on:
-- `core`
-- `sys`
-
-Must not depend on:
-- `exec`
-- `hal`
-- `nonrt`
-
----
-
-### rt/*
-Reusable RT components:
-- controllers
-- FSM
-- sensor validation
-- logging publisher
-
-Depends on:
-- `core`
-- `sys`
-- `rt/transport`
-- optionally `exec`
-
-Must not depend on:
-- `nonrt`
-
----
-
-### nonrt
-Non-real-time infrastructure:
-- ring drain
-- dispatcher
-- backends
-- analytics
-
-Depends on:
-- `core`
-- `sys`
-- `rt/transport`
-- `rt/logging`
-
-Must not depend on:
-- `apps`
-
----
-
-### apps
-Reference or production applications.
-
-Depends on:
-- everything above
-
-Must not be depended on by any framework layer.
-
----
-
-## 3. Forbidden Dependencies
-
-The following are explicitly forbidden:
-
-- `rt/*` → `nonrt/*`
-- `rt/transport` → `exec`
-- `sys` → `hal impl`
-- `core` → anything else
-- `apps` → modifying framework internals
-
----
-
-## 4. Physical Separation Rules
-
-- Platform implementations live in `src/hal/<platform>`
-- RT path must remain header-only where possible
-- Non-RT backends may use `.cpp` implementations
-- `include/hal` contains only interfaces
-
----
-
-## 5. Rationale
-
-This layering guarantees:
-
-- RT determinism is isolated from non-RT behavior
-- Portability is centralized
-- Logging is optional and replaceable
-- Showcase apps do not contaminate framework design
-- Each layer is testable in isolation
-
----
-
-## 6. Industrial Review Criteria
-
-A reviewer should be able to verify:
-
-- RT code path contains no syscalls or allocation
-- Memory ordering is confined to transport primitives
-- HAL implementation can be swapped without affecting logic
-- Non-RT pipeline can stall without blocking RT
-
-If these properties hold, the framework preserves its design contract.
+- `stam_primitives` is header-only and includes both transport primitives and `stam/sys/*` portability headers.
+- `stam_model` and `stam_exec` are interface libraries in current implementation.
+- `stam_rtr` is currently a minimal static runtime stub over `stam_exec`.
