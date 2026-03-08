@@ -13,6 +13,8 @@ static_assert(std::atomic<heartbeat_word_t>::is_always_lock_free,
     "heartbeat_word_t must be lock-free atomic on this platform");
 
 struct rt_safe_tag {};
+// Compatibility marker for explicitly non-RT payloads.
+// RtSafe/RtPayload continue to accept only rt_safe_tag.
 struct rt_unsafe_tag {};
 
 template<class T>

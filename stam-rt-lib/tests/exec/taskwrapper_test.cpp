@@ -8,7 +8,7 @@
  * Exit code: 0 = all tests passed (EXPECT aborts immediately on failure).
  */
 
-#include "exec/tasks/taskwrapper.hpp"
+#include "exec/tasks/task_wrapper.hpp"
 #include "model/tags.hpp"
 
 #include <atomic>

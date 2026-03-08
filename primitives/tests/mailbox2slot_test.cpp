@@ -14,11 +14,14 @@
 
 #include <atomic>
 #include <cassert>
+#include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <thread>
 #include <vector>
 #include <chrono>
+#include <sys/wait.h>
+#include <unistd.h>
 
 using namespace stam::primitives;
 
@@ -68,6 +71,22 @@ struct LargePod {
         return std::memcmp(data, o.data, sizeof(data)) == 0;
     }
 };
+
+template <class Fn>
+bool expect_child_abort(Fn&& fn) {
+    const pid_t pid = ::fork();
+    EXPECT(pid >= 0);
+
+    if (pid == 0) {
+        fn();
+        std::fflush(stdout);
+        _Exit(0);
+    }
+
+    int status = 0;
+    EXPECT(::waitpid(pid, &status, 0) == pid);
+    return WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
+}
 
 // ---------------------------------------------------------------------------
 // Static / compile-time checks
@@ -179,7 +198,7 @@ TEST(test_lock_state_unlocked_after_false) {
     auto reader = mb.reader();
 
     Pod32 out{};
-    auto res = reader.try_read(out);  // no data
+    EXPECT(!reader.try_read(out));  // no data
 
     EXPECT(mb.core().lock_state.value.load() == kUnlocked);
 }
@@ -222,6 +241,24 @@ TEST(test_interleaved_publish_read) {
         EXPECT(reader.try_read(out));
         EXPECT(out.x == i && out.y == -i);
     }
+}
+
+TEST(test_writer_guard_fail_fast) {
+    const bool aborted = expect_child_abort([] {
+        Mailbox2Slot<Pod32> mb;
+        (void)mb.writer();
+        (void)mb.writer();
+    });
+    EXPECT(aborted);
+}
+
+TEST(test_reader_guard_fail_fast) {
+    const bool aborted = expect_child_abort([] {
+        Mailbox2Slot<Pod32> mb;
+        (void)mb.reader();
+        (void)mb.reader();
+    });
+    EXPECT(aborted);
 }
 
 // ---------------------------------------------------------------------------
@@ -371,6 +408,8 @@ int mailbox2slot_tests() {
     RUN(test_lock_state_unlocked_after_true);
     RUN(test_large_pod);
     RUN(test_interleaved_publish_read);
+    RUN(test_writer_guard_fail_fast);
+    RUN(test_reader_guard_fail_fast);
 
     std::printf("\n--- multi-threaded stress ---\n");
     RUN(test_spsc_stress_no_torn_read);

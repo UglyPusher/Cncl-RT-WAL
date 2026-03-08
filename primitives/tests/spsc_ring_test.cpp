@@ -20,9 +20,12 @@
 
 #include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <thread>
+#include <sys/wait.h>
+#include <unistd.h>
 
 using namespace stam::primitives;
 
@@ -71,6 +74,22 @@ struct LargePod {
         return std::memcmp(data, o.data, sizeof(data)) == 0;
     }
 };
+
+template <class Fn>
+bool expect_child_abort(Fn&& fn) {
+    const pid_t pid = ::fork();
+    EXPECT(pid >= 0);
+
+    if (pid == 0) {
+        fn();
+        std::fflush(stdout);
+        _Exit(0);
+    }
+
+    int status = 0;
+    EXPECT(::waitpid(pid, &status, 0) == pid);
+    return WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
+}
 
 static constexpr size_t kCap = 16;  // power of two, usable = 15
 
@@ -193,14 +212,14 @@ TEST(test_empty_full_helpers) {
 
     const size_t cap = writer.usable_capacity();
     for (size_t i = 0; i < cap; ++i) {
-        writer.push({0, 0});
+        EXPECT(writer.push({0, 0}));
     }
 
     EXPECT(!reader.empty());
     EXPECT(writer.full());
 
     Pod32 out{};
-    reader.pop(out);
+    EXPECT(reader.pop(out));
 
     EXPECT(!writer.full());
 }
@@ -254,6 +273,24 @@ TEST(test_wrap_around) {
         EXPECT(b.x == round * 10 + 2);
         EXPECT(c.x == round * 10 + 3);
     }
+}
+
+TEST(test_writer_guard_fail_fast) {
+    const bool aborted = expect_child_abort([] {
+        SPSCRing<Pod32, kCap> ring;
+        (void)ring.writer();
+        (void)ring.writer();
+    });
+    EXPECT(aborted);
+}
+
+TEST(test_reader_guard_fail_fast) {
+    const bool aborted = expect_child_abort([] {
+        SPSCRing<Pod32, kCap> ring;
+        (void)ring.reader();
+        (void)ring.reader();
+    });
+    EXPECT(aborted);
 }
 
 // ---------------------------------------------------------------------------
@@ -423,6 +460,8 @@ int spsc_ring_tests() {
     RUN(test_interleaved_push_pop);
     RUN(test_large_pod);
     RUN(test_wrap_around);
+    RUN(test_writer_guard_fail_fast);
+    RUN(test_reader_guard_fail_fast);
 
     std::printf("\n--- multi-threaded stress ---\n");
     RUN(test_spsc_stress_fifo_no_loss);
