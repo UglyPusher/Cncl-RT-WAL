@@ -13,10 +13,13 @@
 
 #include <atomic>
 #include <cassert>
+#include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <thread>
 #include <chrono>
+#include <sys/wait.h>
+#include <unistd.h>
 
 using namespace stam::primitives;
 
@@ -63,6 +66,22 @@ struct LargePod {
         return std::memcmp(data, o.data, sizeof(data)) == 0;
     }
 };
+
+template <class Fn>
+bool expect_child_abort(Fn&& fn) {
+    const pid_t pid = ::fork();
+    EXPECT(pid >= 0);
+
+    if (pid == 0) {
+        fn();
+        std::fflush(stdout);
+        _Exit(0);
+    }
+
+    int status = 0;
+    EXPECT(::waitpid(pid, &status, 0) == pid);
+    return WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
+}
 
 // ---------------------------------------------------------------------------
 // Static / compile-time checks
@@ -199,6 +218,24 @@ TEST(test_write_alias) {
     Pod32 out{};
     reader.read(out);
     EXPECT(out.x == 55 && out.y == -55);
+}
+
+TEST(test_writer_guard_fail_fast) {
+    const bool aborted = expect_child_abort([] {
+        DoubleBufferSeqLock<Pod32> ch;
+        (void)ch.writer();
+        (void)ch.writer();
+    });
+    EXPECT(aborted);
+}
+
+TEST(test_reader_guard_fail_fast) {
+    const bool aborted = expect_child_abort([] {
+        DoubleBufferSeqLock<Pod32> ch;
+        (void)ch.reader();
+        (void)ch.reader();
+    });
+    EXPECT(aborted);
 }
 
 // ---------------------------------------------------------------------------
@@ -391,6 +428,8 @@ void dbl_buffer_seqlock_tests() {
     RUN(test_multiple_reads_return_latest);
     RUN(test_large_pod);
     RUN(test_write_alias);
+    RUN(test_writer_guard_fail_fast);
+    RUN(test_reader_guard_fail_fast);
 
     std::printf("\n--- cache layout ---\n");
     RUN(test_seq_cacheline_alignment);

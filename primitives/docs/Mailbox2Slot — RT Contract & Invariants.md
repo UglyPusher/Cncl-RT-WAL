@@ -12,12 +12,30 @@ A primitive for transferring a **state snapshot** from one writer to one reader.
 
 ---
 
+## UP Init Contract
+
+Initialization and wiring are defined as **UP init**:
+
+* all `writer()` / `reader()` issuance and bind steps are executed in a single-thread bootstrap phase;
+* scheduler is not running yet;
+* parallel/multi-core init for the same primitive instance is not allowed.
+
+Handle issuance guards in code rely on this contract.
+
+---
+
 ## Model
 
 ### Participants
 
 * **Writer**: exactly one thread/core; only writer writes slots and changes `pub_state`.
 * **Reader**: exactly one thread/core; only reader reads data and changes `lock_state`.
+
+### Handle issuance contract
+
+* `writer()` may be issued at most once per primitive lifetime.
+* `reader()` may be issued at most once per primitive lifetime.
+* Exceeding either limit is a hard misuse error: implementation triggers fail-fast (`assert` + `abort`).
 
 ### Memory
 

@@ -1,6 +1,6 @@
 # SPMCSnapshot (SPMC Snapshot Channel)
 
-`docs/contracts/SPMCSnapshot — RT Contract & Invariants.md` · Revision 6.2 - February 2026
+`docs/contracts/SPMCSnapshot — RT Contract & Invariants.md` · Revision 6.3 - March 2026
 
 ---
 
@@ -15,11 +15,23 @@ A primitive for transferring a **state snapshot** from one writer to multiple re
 The primitive solves **safe shared-state publication** under the following conditions:
 
 * **Bounded memory** - `(N+2) × sizeof(T)` for data versus `2N × sizeof(T)` for N independent Mailbox2Slot instances. For large `sizeof(T)` and large N, savings are significant.
-* **SMP systems** - correctness on multiprocessor systems with independent caches (x86/TSO, ARM, POWER). Torn write is excluded by the happens-before chain `writer store(release)` -> `reader load(acquire)` on atomic `published`: all bytes of `slots[j]` are guaranteed visible to readers **before** `published == j` becomes observable.
-* **Preemption** - correctness is preserved if writer or reader is preempted by the scheduler at any point in the algorithm. Torn write when writer is preempted in the middle of `slots[j] = value` is excluded by the same barrier: `published.store(j, release)` executes only after writer resumes and completes the write.
+* **UP systems (single-core + preemptive)** - this module is UP-only by contract and compile-time guard. For SMP use `SPMCSnapshotSmp`.
+* **Preemption** - correctness on UP is preserved if writer or reader is preempted by the scheduler at any point in the algorithm; `try_read()` closes the claim window with a short preemption-disabled section.
 * **RT domain** - wait-free, O(1), bounded WCET for writer and all readers. No locks, no dynamic memory, no syscalls.
 
 Torn read is excluded **structurally** (W-NoOverwritePublished invariant) - no verify, no retry, no SeqLock-like counters.
+
+---
+
+## UP Init Contract
+
+Initialization and wiring are defined as **UP init**:
+
+* all `writer()` / `reader()` issuance and bind steps are executed in a single-thread bootstrap phase;
+* scheduler is not running yet;
+* parallel/multi-core init for the same primitive instance is not allowed.
+
+Handle issuance guards in code rely on this contract.
 
 ---
 
@@ -44,6 +56,12 @@ Torn read is excluded **structurally** (W-NoOverwritePublished invariant) - no v
 * **Writer**: exactly one thread/core; writes slots, controls `published` and `initialized`.
 * **Reader[0..N-1]**: N threads/cores; read data and control `refcnt[i]` / `busy_mask`.
 
+### Handle issuance guard (runtime contract)
+
+* `writer()` can be issued exactly once per primitive lifetime.
+* `reader()` can be issued at most `N` times per primitive lifetime.
+* Exceeding either limit is a hard misuse error: implementation triggers fail-fast (`assert` + `abort`).
+
 ### Parameters
 
 * `N` - maximum number of simultaneous readers (fixed at compile time)
@@ -54,7 +72,7 @@ Torn read is excluded **structurally** (W-NoOverwritePublished invariant) - no v
 ```
 slots[0..K-1]    - data slots of type T, each on a separate cache line
 refcnt[0..K-1]   - atomic<uint8_t>, exact count of readers reading slots[i]
-busy_mask        - atomic<uint32_t>, conservative busy indicator for writer
+busy_mask        - atomic<signal_mask_t>, conservative busy indicator for writer
 published        - atomic<uint8_t>, index of current published slot in [0..K-1]
 initialized      - atomic<bool>, false before first publication, true after
 ```
@@ -296,12 +314,13 @@ std::is_trivially_copyable<T>::value == true
 ## Mandatory compile-time requirements
 
 * `N >= 1`, `K = N + 2`
-* `K <= 32` for `uint32_t` mask; `K <= 64` for `uint64_t` mask (that is, N <= 30 and N <= 62 respectively)
+* `K <= signal_mask_width` (that is, `N <= signal_mask_width - 2`)
 * `N <= 254` for `refcnt` type `uint8_t`
 * `std::atomic<bool>::is_always_lock_free == true`
 * `std::atomic<uint8_t>::is_always_lock_free == true`
 * `std::atomic<uint32_t>::is_always_lock_free == true`
 * `std::is_trivially_copyable<T>::value == true`
+* `kSystemTopologyIsSmp == false` (UP-only build guard)
 
 *(Optional)* place `published`, `initialized`, and `busy_mask` on a separate cache line from `refcnt[]` and data slots.
 
@@ -313,11 +332,13 @@ std::is_trivially_copyable<T>::value == true
 
 * Not an event queue - delivery of every publication is not guaranteed.
 * N is fixed at compile time.
-* Does not support more than 30 (`uint32_t`) or 62 (`uint64_t`) simultaneous readers without changing `busy_mask` type.
+* Does not support more than `signal_mask_width - 2` simultaneous readers (`K = N + 2` must fit in `signal_mask_t`).
 
 ---
 
 ## Theoretical Bounds
+
+This section is informational. Current `SPMCSnapshot` implementation is UP-only by compile-time guard; for SMP use `SPMCSnapshotSmp`.
 
 ### Impossibility of strict wait-free on both sides for arbitrary SMP
 
@@ -349,7 +370,7 @@ Atomic execution of `load(published) + set(busy_mask)` as one operation on two i
 
 ### SPMCSnapshot position on this map
 
-SPMCSnapshot v6.2 without verify is correct under:
+SPMCSnapshot v6.3 without verify is correct under:
 
 **Condition A (recommended for RT):** writer and readers run on one core with no preemption inside critical sections (UP or RT core with `SCHED_FIFO` / preemption disabled). No physical parallelism - both sides are strictly wait-free.
 

@@ -1,7 +1,9 @@
 #pragma once
 
 #include "stam/stam.hpp"
+#include <cassert>
 #include <atomic>
+#include <cstdlib>
 #include <cstdint>
 #include <type_traits>
 #include "stam/sys/sys_align.hpp"     // SYS_CACHELINE_BYTES
@@ -39,6 +41,11 @@ namespace stam::primitives {
  * PROGRESS:
  *  - write(): wait-free, O(1). 2 atomic RMW + payload copy.
  *  - read():  lock-free. 2 acquire loads + payload copy per attempt.
+ *
+ * MISUSE GUARDS:
+ *  - writer() may be issued at most once per primitive lifetime.
+ *  - reader() may be issued at most once per primitive lifetime.
+ *  - Exceeding either limit triggers fail-fast (assert + abort).
  *
  * SPEC: primitives/docs/DoubleBufferSeqLock - RT Contract & Invariants.md (Rev 1.0)
  */
@@ -178,16 +185,28 @@ private:
 template <typename T>
 class DoubleBufferSeqLock final {
 public:
+    static constexpr uint32_t max_readers = 1u;
+
     DoubleBufferSeqLock() = default;
 
     DoubleBufferSeqLock(const DoubleBufferSeqLock&)            = delete;
     DoubleBufferSeqLock& operator=(const DoubleBufferSeqLock&) = delete;
 
     [[nodiscard]] DoubleBufferSeqLockWriter<T> writer() noexcept {
+        if (issued_writer_) {
+            assert(false && "DoubleBufferSeqLock::writer() already issued");
+            std::abort();
+        }
+        issued_writer_ = true;
         return DoubleBufferSeqLockWriter<T>(core_);
     }
 
     [[nodiscard]] DoubleBufferSeqLockReader<T> reader() noexcept {
+        if (issued_reader_) {
+            assert(false && "DoubleBufferSeqLock::reader() already issued");
+            std::abort();
+        }
+        issued_reader_ = true;
         return DoubleBufferSeqLockReader<T>(core_);
     }
 
@@ -196,6 +215,8 @@ public:
 
 private:
     DoubleBufferSeqLockCore<T> core_;
+    bool                       issued_writer_ = false;
+    bool                       issued_reader_ = false;
 };
 
 } // namespace stam::primitives

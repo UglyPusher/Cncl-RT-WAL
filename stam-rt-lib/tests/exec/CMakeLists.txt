@@ -2,6 +2,7 @@ enable_testing()
 
 add_executable(stam_exec_tests
     taskwrapper_test.cpp
+    task_registry_test.cpp
     main.cpp
 )
 

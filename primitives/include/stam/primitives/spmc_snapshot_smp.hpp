@@ -1,12 +1,16 @@
 #pragma once
 
 #include "stam/stam.hpp"
+#include <cassert>
+#include <bit>
 #include <atomic>
+#include <cstdlib>
 #include <cstdint>
 #include <cstddef>
 #include <type_traits>
 #include "stam/sys/sys_align.hpp"     // SYS_CACHELINE_BYTES, SYS_CACHELINE_ALIGN
 #include "stam/sys/sys_compiler.hpp"  // SYS_FORCEINLINE, SYS_COMPILER_MSVC
+#include "stam/sys/sys_signal.hpp"
 
 namespace stam::primitives {
 
@@ -51,12 +55,12 @@ namespace stam::primitives {
  *               1 fetch_or + 1 fetch_add + 2 published loads +
  *               1 payload copy + 1 fetch_sub + optional fetch_and.
  *
- * MISUSE:
- *  - More than 1 simultaneous writer → undefined behavior.
- *  - More than N simultaneous readers → violates Slot Availability Theorem.
- *  - No runtime guard is provided; enforcement is the caller's responsibility.
+ * MISUSE GUARDS:
+ *  - writer() may be issued at most once per primitive lifetime.
+ *  - reader() may be issued at most N times per primitive lifetime.
+ *  - Exceeding either limit triggers fail-fast (assert + abort).
  *
- * SPEC: primitives/docs/SPMCSnapshotSmp - RT Contract & Invariants.md (Rev 1.0)
+ * SPEC: primitives/docs/SPMCSnapshotSmp - RT Contract & Invariants.md (Rev 1.1)
  */
 
 // ============================================================================
@@ -66,15 +70,10 @@ namespace stam::primitives {
 namespace detail {
 
 // Returns the index of the least-significant set bit.
-// Precondition: v != 0 (undefined behavior if zero, same as __builtin_ctz).
-SYS_FORCEINLINE uint32_t ctz32_smp(uint32_t v) noexcept {
-#if SYS_COMPILER_MSVC
-    unsigned long idx = 0;
-    _BitScanForward(&idx, v);
-    return static_cast<uint32_t>(idx);
-#else
-    return static_cast<uint32_t>(__builtin_ctz(v));
-#endif
+// Precondition: v != 0.
+template <class UInt>
+SYS_FORCEINLINE uint32_t ctz_mask_smp(UInt v) noexcept {
+    return static_cast<uint32_t>(std::countr_zero(v));
 }
 
 } // namespace detail
@@ -94,12 +93,14 @@ template <typename T, uint32_t N>
 struct SPMCSnapshotSmpCore final {
     // K = N + 2 slots guarantees writer always finds a free non-published slot.
     static constexpr uint32_t K = N + 2;
+    using busy_mask_word_t = stam::sys::signal_mask_t;
+    static constexpr uint32_t busy_mask_bits = static_cast<uint32_t>(sizeof(busy_mask_word_t) * 8u);
 
     static_assert(N >= 1,
                   "SPMCSnapshotSmp requires at least 1 reader (N >= 1)");
-    static_assert(K <= 32,
-                  "SPMCSnapshotSmp: K = N+2 must fit in uint32_t busy_mask "
-                  "(K <= 32, i.e. N <= 30)");
+    static_assert(K <= busy_mask_bits,
+                  "SPMCSnapshotSmp: K = N+2 must fit in busy_mask word "
+                  "(N <= signal_mask_width - 2)");
     static_assert(N <= 254,
                   "SPMCSnapshotSmp: N must fit in uint8_t refcnt (N <= 254)");
     static_assert(std::is_trivially_copyable_v<T>,
@@ -107,8 +108,8 @@ struct SPMCSnapshotSmpCore final {
     static_assert(SYS_CACHELINE_BYTES > 0,
                   "SYS_CACHELINE_BYTES must be defined by the portability layer");
 
-    static_assert(std::atomic<uint32_t>::is_always_lock_free,
-                  "std::atomic<uint32_t> must be lock-free on this platform");
+    static_assert(std::atomic<busy_mask_word_t>::is_always_lock_free,
+                  "busy_mask atomic word must be lock-free on this platform");
     static_assert(std::atomic<uint8_t>::is_always_lock_free,
                   "std::atomic<uint8_t> must be lock-free on this platform");
     static_assert(std::atomic<bool>::is_always_lock_free,
@@ -143,7 +144,7 @@ struct SPMCSnapshotSmpCore final {
     //   initialized : writer stores true once (release); readers load (acquire).
     //                 false → no data yet; true → data available forever.
     struct alignas(SYS_CACHELINE_BYTES) Control final {
-        std::atomic<uint32_t> busy_mask{0};
+        std::atomic<busy_mask_word_t> busy_mask{0};
         std::atomic<uint8_t>  published{0};
         std::atomic<bool>     initialized{false};
     };
@@ -182,6 +183,7 @@ template <typename T, uint32_t N>
 class SPMCSnapshotSmpWriter final {
 public:
     static constexpr uint32_t K = SPMCSnapshotSmpCore<T, N>::K;
+    using busy_mask_word_t = typename SPMCSnapshotSmpCore<T, N>::busy_mask_word_t;
 
     explicit SPMCSnapshotSmpWriter(SPMCSnapshotSmpCore<T, N>& core) noexcept
         : core_(core) {}
@@ -211,13 +213,17 @@ public:
     //   Step 7: initialized.store(true, release). Idempotent after first call.
     void publish(const T& value) noexcept {
         // Steps 1-2: observe busy and published.
-        const uint32_t busy = core_.ctrl.busy_mask.load(std::memory_order_acquire);
-        const uint8_t  pub  = core_.ctrl.published.load(std::memory_order_acquire);
+        const busy_mask_word_t busy = core_.ctrl.busy_mask.load(std::memory_order_acquire);
+        const uint8_t          pub  = core_.ctrl.published.load(std::memory_order_acquire);
 
         // Steps 3-4: select a free non-published slot.
-        const uint32_t all_mask   = (uint32_t(1u) << K) - 1u;
-        const uint32_t candidates = ~busy & ~(uint32_t(1u) << pub) & all_mask;
-        const uint8_t  j = static_cast<uint8_t>(detail::ctz32_smp(candidates));
+        constexpr busy_mask_word_t all_mask =
+            (K == SPMCSnapshotSmpCore<T, N>::busy_mask_bits)
+                ? ~busy_mask_word_t{0}
+                : ((busy_mask_word_t{1} << K) - busy_mask_word_t{1});
+        const busy_mask_word_t candidates =
+            (~busy) & ~(busy_mask_word_t{1} << pub) & all_mask;
+        const uint8_t j = static_cast<uint8_t>(detail::ctz_mask_smp(candidates));
 
         // Step 5: write data. j != pub is guaranteed by candidate selection.
         core_.slots[j].value = value;
@@ -246,6 +252,7 @@ template <typename T, uint32_t N>
 class SPMCSnapshotSmpReader final {
 public:
     static constexpr uint32_t K = SPMCSnapshotSmpCore<T, N>::K;
+    using busy_mask_word_t = typename SPMCSnapshotSmpCore<T, N>::busy_mask_word_t;
 
     explicit SPMCSnapshotSmpReader(SPMCSnapshotSmpCore<T, N>& core) noexcept
         : core_(core) {}
@@ -287,7 +294,7 @@ public:
 
         // Step 3: set claim. ORDER CRITICAL: busy_mask before refcnt (I5).
         // busy_mask must be visible to writer before refcnt confirms the claim.
-        core_.ctrl.busy_mask.fetch_or(uint32_t(1u) << i, std::memory_order_acq_rel);
+        core_.ctrl.busy_mask.fetch_or(busy_mask_word_t{1} << i, std::memory_order_acq_rel);
         core_.refcnt[i].fetch_add(1u, std::memory_order_acq_rel);
 
         // Step 4: re-verify that published has not changed.
@@ -297,7 +304,7 @@ public:
         if (i2 != i) {
             // Release claim (I5): refcnt before busy_mask.
             if (core_.refcnt[i].fetch_sub(1u, std::memory_order_acq_rel) == 1u) {
-                core_.ctrl.busy_mask.fetch_and(~(uint32_t(1u) << i),
+                core_.ctrl.busy_mask.fetch_and(~(busy_mask_word_t{1} << i),
                                                std::memory_order_release);
             }
             return false;
@@ -310,7 +317,7 @@ public:
         // Step 6: release claim. ORDER CRITICAL: refcnt before busy_mask (I5).
         // Only the last reader (fetch_sub returns 1) clears the busy_mask bit.
         if (core_.refcnt[i].fetch_sub(1u, std::memory_order_acq_rel) == 1u) {
-            core_.ctrl.busy_mask.fetch_and(~(uint32_t(1u) << i),
+            core_.ctrl.busy_mask.fetch_and(~(busy_mask_word_t{1} << i),
                                            std::memory_order_release);
         }
 
@@ -328,6 +335,8 @@ private:
 template <typename T, uint32_t N>
 class SPMCSnapshotSmp final {
 public:
+    static constexpr uint32_t max_readers = N;
+
     SPMCSnapshotSmp() = default;
 
     SPMCSnapshotSmp(const SPMCSnapshotSmp&)            = delete;
@@ -335,15 +344,23 @@ public:
 
     // NOTE: writer() must be called at most once across the object's lifetime.
     // reader() may be called up to N times; each call yields an independent
-    // consumer handle for the same Core. Calling reader() more than N times
-    // violates the Slot Availability Theorem.
-    // No runtime guard is provided; enforcement is the caller's responsibility.
+    // consumer handle for the same Core.
 
     [[nodiscard]] SPMCSnapshotSmpWriter<T, N> writer() noexcept {
+        if (issued_writer_) {
+            assert(false && "SPMCSnapshotSmp::writer() already issued");
+            std::abort();
+        }
+        issued_writer_ = true;
         return SPMCSnapshotSmpWriter<T, N>(core_);
     }
 
     [[nodiscard]] SPMCSnapshotSmpReader<T, N> reader() noexcept {
+        if (issued_readers_ >= N) {
+            assert(false && "SPMCSnapshotSmp::reader() limit exceeded");
+            std::abort();
+        }
+        ++issued_readers_;
         return SPMCSnapshotSmpReader<T, N>(core_);
     }
 
@@ -352,6 +369,8 @@ public:
 
 private:
     SPMCSnapshotSmpCore<T, N> core_;
+    bool                      issued_writer_ = false;
+    uint32_t                  issued_readers_ = 0;
 };
 
 } // namespace stam::primitives

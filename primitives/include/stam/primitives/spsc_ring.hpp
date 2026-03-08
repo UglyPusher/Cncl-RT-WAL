@@ -1,7 +1,9 @@
 #pragma once
 
 #include "stam/stam.hpp"
+#include <cassert>
 #include <atomic>
+#include <cstdlib>
 #include <cstddef>
 #include <type_traits>
 #include "stam/sys/sys_align.hpp"   // SYS_CACHELINE_BYTES, SYS_CACHELINE_ALIGN
@@ -32,7 +34,10 @@ namespace stam::primitives {
  *  - Usable slots = Capacity - 1 (one slot reserved as full/empty sentinel).
  *
  * MISUSE:
- *  - Violations of the above contract result in undefined behavior
+ *  - writer() may be issued at most once per primitive lifetime.
+ *  - reader() may be issued at most once per primitive lifetime.
+ *  - Exceeding either limit triggers fail-fast (assert + abort).
+ *  - Other contract violations result in undefined behavior
  *    with respect to the intended semantics of this component.
  */
 
@@ -196,20 +201,28 @@ private:
 template <typename T, size_t Capacity>
 class SPSCRing final {
 public:
+    static constexpr size_t max_readers = 1;
+
     SPSCRing() = default;
 
     SPSCRing(const SPSCRing&)            = delete;
     SPSCRing& operator=(const SPSCRing&) = delete;
 
-    // NOTE: Creating more than one Writer or Reader for the same ring
-    // violates the 1P/1C contract and is semantically undefined.
-    // Runtime guards are intentionally omitted to keep the RT path minimal.
-
     [[nodiscard]] SPSCRingWriter<T, Capacity> writer() noexcept {
+        if (issued_writer_) {
+            assert(false && "SPSCRing::writer() already issued");
+            std::abort();
+        }
+        issued_writer_ = true;
         return SPSCRingWriter<T, Capacity>(core_);
     }
 
     [[nodiscard]] SPSCRingReader<T, Capacity> reader() noexcept {
+        if (issued_reader_) {
+            assert(false && "SPSCRing::reader() already issued");
+            std::abort();
+        }
+        issued_reader_ = true;
         return SPSCRingReader<T, Capacity>(core_);
     }
 
@@ -218,6 +231,8 @@ public:
 
 private:
     SPSCRingCore<T, Capacity> core_{};
+    bool                      issued_writer_ = false;
+    bool                      issued_reader_ = false;
 };
 
 } // namespace stam::primitives

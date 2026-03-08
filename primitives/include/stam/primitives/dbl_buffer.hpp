@@ -1,7 +1,9 @@
 #pragma once
 
 #include "stam/stam.hpp"
+#include <cassert>
 #include <atomic>
+#include <cstdlib>
 #include <cstdint>
 #include <type_traits>
 #include "stam/sys/sys_align.hpp"   // SYS_CACHELINE_BYTES, SYS_CACHELINE_ALIGN
@@ -44,8 +46,11 @@ namespace stam::primitives {
  *  - read():  O(1), one acquire load + one copy
  *
  * MISUSE:
- *  - Violations of the above contract result in undefined behavior
- *    with respect to the intended semantics of this component.
+ *  - writer() may be issued at most once per primitive lifetime.
+ *  - reader() may be issued at most once per primitive lifetime.
+ *  - Exceeding either limit triggers fail-fast (assert + abort).
+ *  - Other contract violations result in undefined behavior with respect
+ *    to the intended semantics of this component.
  */
 
 // Forward declarations for friend access in DoubleBufferCore.
@@ -194,22 +199,28 @@ class DoubleBuffer final {
     static_assert(!stam::sys::kSystemTopologyIsSmp,
                   "DoubleBuffer is UP-only. In SMP builds use DoubleBufferSeqLock.");
 public:
+    static constexpr uint32_t max_readers = 1u;
+
     DoubleBuffer() = default;
 
     DoubleBuffer(const DoubleBuffer&) = delete;
     DoubleBuffer& operator=(const DoubleBuffer&) = delete;
 
-    // NOTE (review item #2 - multiple writers):
-    // This is an ARCHITECTURAL constraint, not a runtime-checked one.
-    // Creating more than one Writer or Reader for the same buffer
-    // violates the 1P/1C contract and is semantically undefined.
-    //
-    // Runtime guards are intentionally omitted to keep the RT path minimal.
     [[nodiscard]] DoubleBufferWriter<T> writer() noexcept {
+        if (issued_writer_) {
+            assert(false && "DoubleBuffer::writer() already issued");
+            std::abort();
+        }
+        issued_writer_ = true;
         return DoubleBufferWriter<T>(core_);
     }
 
     [[nodiscard]] DoubleBufferReader<T> reader() const noexcept {
+        if (issued_reader_) {
+            assert(false && "DoubleBuffer::reader() already issued");
+            std::abort();
+        }
+        issued_reader_ = true;
         return DoubleBufferReader<T>(core_);
     }
 
@@ -221,6 +232,8 @@ private:
     // Value-initialized on purpose: provides deterministic zero state,
     // while keeping "no data yet" semantically unspecified.
     DoubleBufferCore<T> core_{};
+    bool                issued_writer_ = false;
+    mutable bool        issued_reader_ = false;
 };
 
 } // namespace stam::primitives
