@@ -1,83 +1,241 @@
-# DoubleBufferSeqLock
+# DoubleBufferSeqLock - RT Contract & Invariants
 
-Revision: 1.0 (March 2026)
+## 0. Scope
+
+`DoubleBufferSeqLock<T>` is an SPSC snapshot primitive for transferring state
+between two execution contexts:
+
+- **Producer (writer)** - single thread/core, write-only.
+- **Consumer (reader)** - single thread/core, read-only.
+
+Designed for:
+
+- latest-state delivery (latest-wins),
+- SMP-safe operation without preemption masking,
+- deterministic writer path,
+- bounded per-attempt reader path with internal retry.
+
+This is **not** a queue and **not** a log.
 
 ---
 
-## 1. Topology
+## 0.1 UP Init Contract
 
-- Exactly 1 producer (writer)
-- Exactly 1 consumer (reader)
-- Roles are fixed: producer is write-only, consumer is read-only
-- Platform target: SMP-safe
+Initialization and wiring are defined as **UP init**:
 
-## 2. Progress Guarantees
+- all `writer()` / `reader()` issuance and bind steps are executed in a single-thread bootstrap phase;
+- scheduler is not running yet;
+- parallel/multi-core init for the same primitive instance is not allowed.
 
-- `write(...)`: wait-free, O(1)
-- `read(...)`: lock-free, O(1) average, retry-loop under contention
+Handle issuance guards in code rely on this contract.
 
-## 3. API Surface
+---
+
+## 1. Semantic Model
+
+`DoubleBufferSeqLock` implements a one-slot seqlock snapshot model:
+
+- Writer opens a write window by making `seq` odd.
+- Writer updates payload.
+- Writer closes window by making `seq` even.
+- Reader accepts payload only if the same even `seq` is seen before and after copy.
+
+Intermediate writer states may be lost; only the latest stable snapshot matters.
+
+---
+
+## 2. Compile-Time Invariants
+
+`T` must satisfy:
 
 ```cpp
-template<class T> class DoubleBufferSeqLockWriter {
-public:
-    void write(const T& value) noexcept;
-};
-
-template<class T> class DoubleBufferSeqLockReader {
-public:
-    void read(T& out) noexcept; // may internally retry until stable snapshot
-};
+std::is_trivially_copyable_v<T>
 ```
 
-Semantics:
-- Snapshot/latest-wins
-- Intermediate writer states may be lost
-- `read()` returns a consistent snapshot (after successful internal verify)
+Also required:
 
-## 4. Memory Model
+- `SYS_CACHELINE_BYTES > 0`
+- `std::atomic<uint32_t>::is_always_lock_free == true`
 
-Writer:
-1. `seq.fetch_add(1, memory_order_release)`  // odd = write open
-2. write payload bytes
-3. `seq.fetch_add(1, memory_order_release)`  // even = write closed
+Consequences:
 
-Reader loop:
-1. `s1 = seq.load(memory_order_acquire)`
-2. if `s1` odd -> retry
-3. copy payload
-4. `s2 = seq.load(memory_order_acquire)`
-5. if `s1 != s2` -> retry
-6. success
-
-## 5. Invariants
-
-- Even `seq`: no writer in critical write section
-- Odd `seq`: writer is updating payload
-- Reader accepts data only when the same even `seq` is observed before and after copy
-- Producer is single-writer for `seq` and payload bytes
-- Known seqlock trade-off: if writer overlaps reader copy, torn intermediate bytes
-  may be observed transiently, but the reader discards such copy via seq re-verify.
-
-## 6. Failure/Retry Semantics
-
-- No explicit `false` return
-- Reader retries internally until stable snapshot is obtained
-- Under heavy write pressure reader may spin; lock-free guarantee still holds
-- Before first `write()`, `read()` returns value-initialized storage content.
-  "No data yet" is semantically indistinguishable from a valid zero snapshot.
-
-## 7. Cost Model
-
-Writer fast path:
-- 2 atomic RMW + 1 payload copy
-
-Reader per attempt:
-- 2 atomic loads + 1 payload copy
+- no constructors/destructors on payload path,
+- bounded deterministic copy cost,
+- lock-free atomic sequence counter.
 
 ---
 
-## Notes
+## 3. Runtime Invariants
 
-- This type is the SMP-safe successor for UP-only `DoubleBuffer`.
-- Intended as a low-overhead SPSC snapshot primitive with structural torn-read exclusion via sequence verification.
+Notation:
+
+| Symbol | Meaning |
+|---|---|
+| `seq` | Sequence counter: even = quiescent, odd = write in progress |
+| `slot` | Single payload slot |
+
+Invariants:
+
+- Only writer modifies `seq` and payload.
+- Reader treats odd `seq` as unstable and retries.
+- Reader accepts payload only when `s1 == s2` and both are even.
+- `seq` changes by `+1` on open and `+1` on close, preserving monotonic parity protocol.
+
+---
+
+## 4. Threading Model (Preconditions)
+
+- Exactly one writer per instance.
+- Exactly one reader per instance.
+- Writer is not re-entrant.
+- Reader is not re-entrant.
+
+Handle issuance contract (runtime-enforced):
+
+- `writer()` may be issued at most once per primitive lifetime.
+- `reader()` may be issued at most once per primitive lifetime.
+- Exceeding either limit triggers fail-fast (`assert` + `abort`).
+
+Other violations are undefined behavior relative to this contract.
+
+---
+
+## 5. Memory Ordering / Happens-Before
+
+Writer:
+
+```cpp
+seq.fetch_add(1, memory_order_release); // odd
+slot = value;
+seq.fetch_add(1, memory_order_release); // even
+```
+
+Reader loop:
+
+```cpp
+s1 = seq.load(memory_order_acquire);
+if (s1 is odd) retry;
+tmp = slot;
+s2 = seq.load(memory_order_acquire);
+if (s1 != s2) retry;
+out = tmp; // accepted snapshot
+```
+
+Guarantee:
+
+- If reader accepts (`s1 == s2`, even), copied payload corresponds to a stable
+  interval with no overlapping committed write window.
+
+Note:
+
+- Reader may transiently copy torn bytes during overlap, but such copies are
+  discarded by re-verify and never accepted.
+
+---
+
+## 6. Progress Guarantees
+
+Writer (`write()`):
+
+- wait-free, O(1),
+- fixed sequence of operations: 2 atomic RMW + 1 payload copy.
+
+Reader (`read()`):
+
+- lock-free (not wait-free),
+- per attempt: 2 acquire loads + 1 payload copy,
+- retries under contention until stable snapshot is observed.
+
+Reader may spin under heavy continuous writes; system-level scheduling/QoS must
+bound this if strict latency is required.
+
+---
+
+## 7. RT Contract
+
+Writer path is suitable for hard-RT:
+
+- bounded WCET,
+- no locks, syscalls, or dynamic allocation,
+- no dependency on reader state.
+
+Reader path:
+
+- lock-free and bounded per attempt,
+- total completion time depends on contention (retry count).
+
+Implication: use in hard-RT reader only if retry budget is acceptable by system
+timing analysis.
+
+---
+
+## 8. Initial State
+
+Before first `write()`, payload is value-initialized (`T{}`) and `seq == 0`.
+
+Therefore `read()`/`try_read()` can return a zero value before any publication.
+This is C++-defined behavior but semantically cannot distinguish:
+
+- "no data yet"
+- "valid zero snapshot"
+
+If this distinction is needed, add an external initialization/version signal.
+
+---
+
+## 9. Error Model
+
+- No error return from `read()` (it retries internally).
+- `try_read()` is a unified alias that always returns `true` after internal read.
+- No exceptions, no error codes.
+- Misuse of handle issuance fails fast by design (`assert` + `abort`).
+
+---
+
+## 10. Misuse Scenarios (Forbidden)
+
+- Multiple writers or multiple readers on the same instance.
+- Re-entrant writer/reader calls.
+- Non-trivially-copyable `T`.
+- Using as event queue/log.
+- Assuming every intermediate state is observable.
+
+---
+
+## 11. When to Use DoubleBufferSeqLock
+
+Use when:
+
+- topology is strictly SPSC,
+- latest snapshot is needed,
+- SMP safety is required,
+- writer path must remain wait-free and minimal,
+- reader-side retries are acceptable.
+
+Typical examples:
+
+- shared telemetry/state between dedicated writer and consumer thread,
+- control/state handoff where occasional retry cost is acceptable.
+
+---
+
+## 12. Relation to DoubleBuffer
+
+| Property | DoubleBuffer | DoubleBufferSeqLock |
+|---|---|---|
+| Topology | SPSC | SPSC |
+| SMP safety | No (UP-only contract) | Yes |
+| Writer | wait-free O(1) | wait-free O(1) |
+| Reader | O(1), no retry | lock-free retry loop |
+| Torn-read handling | requires non-overlap by system contract | overlap tolerated, torn copies discarded |
+| "No data yet" signal | none | none |
+
+---
+
+## 13. Summary
+
+`DoubleBufferSeqLock<T>` is an SMP-safe SPSC latest-wins snapshot primitive.
+It keeps writer path wait-free and deterministic, and provides reader-side
+consistency through sequence verification with lock-free retries.
+
+It is not a queue and not intended for guaranteed delivery of all updates.

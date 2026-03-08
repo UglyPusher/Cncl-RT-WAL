@@ -19,6 +19,18 @@ Loss can happen only when `push() == false`.
 
 ---
 
+## 0.1 UP Init Contract
+
+Initialization and wiring are defined as **UP init**:
+
+* all `writer()` / `reader()` issuance and bind steps are executed in a single-thread bootstrap phase;
+* scheduler is not running yet;
+* parallel/multi-core init for the same primitive instance is not allowed.
+
+Handle issuance guards in code rely on this contract.
+
+---
+
 ## 1. Compile-time invariants
 
 1. `Capacity` is a power of two and `Capacity >= 2`:
@@ -93,6 +105,14 @@ One slot is always reserved to distinguish **empty/full**.
 4. Producer must be non-reentrant (for example, nested IRQ/NMI must not call `push()` concurrently).
 5. Violating these conditions leads to **undefined behavior** within the component contract.
 6. Consumer must also be non-reentrant (nested IRQ/NMI must not call `pop()` concurrently).
+
+### 3.1 Handle issuance contract
+
+`SPSCRing::writer()` and `SPSCRing::reader()` are runtime-guarded:
+
+* `writer()` may be issued at most once per ring lifetime.
+* `reader()` may be issued at most once per ring lifetime.
+* Exceeding either limit triggers fail-fast (`assert` + `abort`).
 
 ---
 
