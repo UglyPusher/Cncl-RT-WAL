@@ -22,8 +22,12 @@ namespace stam::primitives {
  *  - T is trivially copyable (bounded, deterministic copy; no ctor/dtor)
  *
  * PLATFORM CONSTRAINT:
- *  - SMP-safe. No preemption_disable needed.
+ *  - Default/active profile: platform-optimized.
+ *  - SMP-safe in platform-optimized profile. No preemption_disable needed.
  *    UP-only predecessor: Mailbox2Slot.
+ *  - strict ISO C++ profile requires a race-free payload design
+ *    (different implementation).
+ *  - NOTE: strict profile is currently NOT implemented in this class.
  *
  * SEMANTICS:
  *  - Snapshot / latest-wins. Intermediate updates may be lost.
@@ -37,6 +41,8 @@ namespace stam::primitives {
  *    2 full publish cycles — low false-return rate in RT polling loops.
  *  - Per-slot seq: even = quiescent, odd = write in progress.
  *    Reader accepts data only if same even seq observed before and after copy.
+ *  - This protects snapshot acceptance at protocol level; it does not convert
+ *    overlapping payload reads/writes into strict ISO C++ race-free semantics.
  *
  * PROGRESS:
  *  - publish(): wait-free, O(1). 2 atomic RMW + payload copy + 2 stores.
@@ -159,8 +165,9 @@ public:
         // Step 2: open write window on slot j (seq → odd).
         core_.seqs[j].seq.fetch_add(1u, std::memory_order_release);
 
-        // Step 3: write payload (non-atomic; safe — single writer, and reader
-        // is blocked by odd seq from accepting this slot during the write).
+        // Step 3: write payload (non-atomic).
+        // Safety here is protocol-level in platform-optimized profile:
+        // reader rejects overlapping copies using seq re-verify.
         core_.slots[j].value = value;
 
         // Step 4: close write window (seq → even).
@@ -267,20 +274,24 @@ public:
     Mailbox2SlotSmp& operator=(const Mailbox2SlotSmp&) = delete;
 
     [[nodiscard]] Mailbox2SlotSmpWriter<T> writer() noexcept {
-        if (issued_writer_) {
+        bool expected = false;
+        if (!issued_writer_.compare_exchange_strong(expected, true,
+                                                    std::memory_order_acq_rel,
+                                                    std::memory_order_acquire)) {
             assert(false && "Mailbox2SlotSmp::writer() already issued");
             std::abort();
         }
-        issued_writer_ = true;
         return Mailbox2SlotSmpWriter<T>(core_);
     }
 
     [[nodiscard]] Mailbox2SlotSmpReader<T> reader() noexcept {
-        if (issued_reader_) {
+        bool expected = false;
+        if (!issued_reader_.compare_exchange_strong(expected, true,
+                                                    std::memory_order_acq_rel,
+                                                    std::memory_order_acquire)) {
             assert(false && "Mailbox2SlotSmp::reader() already issued");
             std::abort();
         }
-        issued_reader_ = true;
         return Mailbox2SlotSmpReader<T>(core_);
     }
 
@@ -289,8 +300,8 @@ public:
 
 private:
     Mailbox2SlotSmpCore<T> core_;
-    bool                   issued_writer_ = false;
-    bool                   issued_reader_ = false;
+    std::atomic<bool>      issued_writer_{false};
+    std::atomic<bool>      issued_reader_{false};
 };
 
 } // namespace stam::primitives

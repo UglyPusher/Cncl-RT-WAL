@@ -2,7 +2,7 @@
  * mailbox2slot_smp_test.cpp
  *
  * Stress tests for Mailbox2SlotSmp (SPSC Snapshot Mailbox, SMP-safe).
- * Spec: primitives/docs/Mailbox2SlotSmp - RT Contract & Invariants.md (Rev 1.0)
+ * Spec: primitives/docs/Mailbox2SlotSmp - RT Contract & Invariants.md (Rev 1.1)
  *
  * Exit code: 0 = all tests passed (EXPECT aborts immediately on failure).
  */
@@ -91,7 +91,7 @@ bool expect_child_abort(Fn&& fn) {
 }
 
 // ---------------------------------------------------------------------------
-// Static / compile-time checks
+// Contract tests: static / compile-time checks
 // ---------------------------------------------------------------------------
 
 TEST(test_static_trivially_copyable) {
@@ -122,7 +122,7 @@ TEST(test_initial_state) {
 }
 
 // ---------------------------------------------------------------------------
-// Single-threaded functional tests
+// Contract tests: behavior
 // ---------------------------------------------------------------------------
 
 TEST(test_try_read_before_publish_returns_false) {
@@ -277,7 +277,7 @@ TEST(test_reader_guard_fail_fast) {
 }
 
 // ---------------------------------------------------------------------------
-// Cache layout checks
+// Implementation tests
 // ---------------------------------------------------------------------------
 
 TEST(test_slots_cacheline_aligned) {
@@ -312,7 +312,7 @@ TEST(test_seq0_separate_from_seq1) {
 }
 
 // ---------------------------------------------------------------------------
-// Multi-threaded stress tests
+// Contract tests: multi-threaded behavior
 // ---------------------------------------------------------------------------
 
 // Basic SMP stress: writer and reader on separate threads.
@@ -468,13 +468,13 @@ TEST(test_stress_write_alias) {
 int mailbox2slot_smp_tests() {
     std::printf("=== Mailbox2SlotSmp tests ===\n\n");
 
-    std::printf("--- static / compile-time ---\n");
+    std::printf("--- contract: static / compile-time ---\n");
     RUN(test_static_trivially_copyable);
     RUN(test_lock_free_atomics);
     RUN(test_concepts);
     RUN(test_initial_state);
 
-    std::printf("\n--- single-threaded functional ---\n");
+    std::printf("\n--- contract: behavior ---\n");
     RUN(test_try_read_before_publish_returns_false);
     RUN(test_publish_then_read);
     RUN(test_write_alias);
@@ -487,18 +487,16 @@ int mailbox2slot_smp_tests() {
     RUN(test_interleaved_publish_read);
     RUN(test_writer_guard_fail_fast);
     RUN(test_reader_guard_fail_fast);
-
-    std::printf("\n--- cache layout ---\n");
-    RUN(test_slots_cacheline_aligned);
-    RUN(test_seqs_cacheline_aligned);
-    RUN(test_ctrl_cacheline_aligned);
-    RUN(test_seq0_separate_from_seq1);
-
-    std::printf("\n--- multi-threaded stress ---\n");
     RUN(test_stress_no_torn_read);
     RUN(test_stress_latest_wins_after_writer_done);
     RUN(test_stress_sustained);
     RUN(test_stress_write_alias);
+
+    std::printf("\n--- implementation ---\n");
+    RUN(test_slots_cacheline_aligned);
+    RUN(test_seqs_cacheline_aligned);
+    RUN(test_ctrl_cacheline_aligned);
+    RUN(test_seq0_separate_from_seq1);
 
     std::printf("\n  passed: %d / %d\n\n", g_passed, g_total);
     return 0;
