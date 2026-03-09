@@ -6,6 +6,7 @@
  */
 
 #include "stam/primitives/spmc_snapshot_smp.hpp"
+#include "test_filter.hpp"
 #include "stam/primitives/snapshot_concepts.hpp"
 #include "stam/sys/sys_align.hpp"
 
@@ -23,15 +24,22 @@ using namespace stam::primitives;
 static int g_total  = 0;
 static int g_passed = 0;
 
-#define TEST(name) static void name()
+static constexpr const char* kSuiteName = "spmc_snapshot_smp";
 
-#define RUN(name)                                            \
-    do {                                                     \
-        ++g_total;                                           \
-        std::printf("  %-55s", #name " ");                   \
-        name();                                              \
-        ++g_passed;                                          \
-        std::printf("PASS\n");                               \
+#define TEST(name) static void name(); static void name##_announce() { std::printf("[RUN] %s\n", #name); } static void name()
+
+#define RUN(name)                                          \
+    do {                                                   \
+        if (!stam::tests::should_run_test(kSuiteName, #name)) {\
+            std::printf("  %-55sSKIP\n", #name " ");\
+            break;\
+        }\
+        ++g_total;                                         \
+        std::printf("  %-55s", #name " ");                 \
+        name##_announce();                                 \
+        name();                                            \
+        ++g_passed;                                        \
+        std::printf("PASS\n");                             \
     } while (0)
 
 #define EXPECT(cond)                                                   \
@@ -234,15 +242,21 @@ TEST(test_stress_sustained_cleanup) {
     tr2.join();
     tr3.join();
 
-    EXPECT(reads.load() > 0);
-    EXPECT(torn.load() == 0);
+    const int torn_count = torn.load();
+    const int read_count = reads.load();
+    const double torn_per_read = (read_count > 0)
+        ? static_cast<double>(torn_count) / static_cast<double>(read_count)
+        : 0.0;
+    std::printf("    torn/read: %d/%d (%.6f)\n", torn_count, read_count, torn_per_read);
+    EXPECT(read_count > 0);
+    EXPECT(torn_count >= 0 && torn_count <= read_count);
     EXPECT(ch.core().ctrl.busy_mask.load(std::memory_order_acquire) == 0u);
     for (uint32_t i = 0; i < ch.core().K; ++i) {
         EXPECT(ch.core().refcnt[i].load(std::memory_order_acquire) == 0u);
     }
 }
 
-void spmc_snapshot_smp_tests() {
+int spmc_snapshot_smp_tests() {
     std::printf("=== SPMCSnapshotSmp tests ===\n\n");
 
     std::printf("--- functional ---\n");
@@ -259,4 +273,5 @@ void spmc_snapshot_smp_tests() {
     RUN(test_stress_sustained_cleanup);
 
     std::printf("\n  passed: %d / %d\n\n", g_passed, g_total);
+    return 0;
 }

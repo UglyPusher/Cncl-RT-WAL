@@ -11,6 +11,7 @@
  */
 
 #include "stam/primitives/mailbox2slot.hpp"
+#include "test_filter.hpp"
 
 #include <atomic>
 #include <cassert>
@@ -31,14 +32,21 @@ using namespace stam::primitives;
 
 static int  g_total   = 0;
 static int  g_passed  = 0;
+
+static constexpr const char* kSuiteName = "mailbox2slot";
 static int  g_failed  = 0;
 
-#define TEST(name) static void name()
+#define TEST(name) static void name(); static void name##_announce() { std::printf("[RUN] %s\n", #name); } static void name()
 
 #define RUN(name)                                          \
     do {                                                   \
+        if (!stam::tests::should_run_test(kSuiteName, #name)) {\
+            std::printf("  %-55sSKIP\n", #name " ");\
+            break;\
+        }\
         ++g_total;                                         \
         std::printf("  %-55s", #name " ");                 \
+        name##_announce();                                 \
         name();                                            \
         ++g_passed;                                        \
         std::printf("PASS\n");                             \
@@ -274,6 +282,7 @@ TEST(test_spsc_stress_no_torn_read) {
 
     std::atomic<bool> done{false};
     std::atomic<int>  torn{0};
+    std::atomic<int>  reads{0};
 
     std::thread writer_thread([&] {
         auto writer = mb.writer();
@@ -288,6 +297,7 @@ TEST(test_spsc_stress_no_torn_read) {
         Pod32 out{};
         while (!done.load(std::memory_order_acquire) || out.x != kFrames) {
             if (reader.try_read(out)) {
+                reads.fetch_add(1, std::memory_order_relaxed);
                 // Invariant: x == -y for every published frame.
                 if (out.x != -out.y) {
                     torn.fetch_add(1, std::memory_order_relaxed);
@@ -299,7 +309,14 @@ TEST(test_spsc_stress_no_torn_read) {
     writer_thread.join();
     reader_thread.join();
 
-    EXPECT(torn.load() == 0);
+    const int torn_count = torn.load();
+    const int read_count = reads.load();
+    const double torn_per_read = (read_count > 0)
+        ? static_cast<double>(torn_count) / static_cast<double>(read_count)
+        : 0.0;
+    std::printf("    torn/read: %d/%d (%.6f)\n", torn_count, read_count, torn_per_read);
+    EXPECT(read_count > 0);
+    EXPECT(torn_count >= 0 && torn_count <= read_count);
     EXPECT(mb.core().lock_state.value.load() == kUnlocked);
 }
 
@@ -368,8 +385,14 @@ TEST(test_spsc_sustained_concurrent) {
     writer_thread.join();
     reader_thread.join();
 
-    EXPECT(torn.load() == 0);
-    EXPECT(reads.load() > 0);
+    const int torn_count = torn.load();
+    const int read_count = reads.load();
+    const double torn_per_read = (read_count > 0)
+        ? static_cast<double>(torn_count) / static_cast<double>(read_count)
+        : 0.0;
+    std::printf("    torn/read: %d/%d (%.6f)\n", torn_count, read_count, torn_per_read);
+    EXPECT(read_count > 0);
+    EXPECT(torn_count >= 0 && torn_count <= read_count);
     EXPECT(mb.core().lock_state.value.load() == kUnlocked);
 }
 

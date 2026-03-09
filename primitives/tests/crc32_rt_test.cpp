@@ -18,6 +18,7 @@
  */
 
 #include "stam/primitives/crc32_rt.hpp"
+#include "test_filter.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -33,14 +34,21 @@ using namespace stam::primitives;
 
 static int g_total  = 0;
 static int g_passed = 0;
+
+static constexpr const char* kSuiteName = "crc32";
 static int g_failed = 0;
 
-#define TEST(name) static void name()
+#define TEST(name) static void name(); static void name##_announce() { std::printf("[RUN] %s\n", #name); } static void name()
 
 #define RUN(name)                                          \
     do {                                                   \
+        if (!stam::tests::should_run_test(kSuiteName, #name)) {\
+            std::printf("  %-55sSKIP\n", #name " ");\
+            break;\
+        }\
         ++g_total;                                         \
-        std::printf("  %-60s", #name " ");                 \
+        std::printf("  %-55s", #name " ");                 \
+        name##_announce();                                 \
         name();                                            \
         ++g_passed;                                        \
         std::printf("PASS\n");                             \

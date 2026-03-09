@@ -8,6 +8,7 @@
  */
 
 #include "stam/primitives/mailbox2slot_smp.hpp"
+#include "test_filter.hpp"
 #include "stam/primitives/snapshot_concepts.hpp"
 #include "stam/sys/sys_align.hpp"
 
@@ -29,15 +30,22 @@ using namespace stam::primitives;
 static int g_total  = 0;
 static int g_passed = 0;
 
-#define TEST(name) static void name()
+static constexpr const char* kSuiteName = "mailbox2slot_smp";
 
-#define RUN(name)                                            \
-    do {                                                     \
-        ++g_total;                                           \
-        std::printf("  %-55s", #name " ");                   \
-        name();                                              \
-        ++g_passed;                                          \
-        std::printf("PASS\n");                               \
+#define TEST(name) static void name(); static void name##_announce() { std::printf("[RUN] %s\n", #name); } static void name()
+
+#define RUN(name)                                          \
+    do {                                                   \
+        if (!stam::tests::should_run_test(kSuiteName, #name)) {\
+            std::printf("  %-55sSKIP\n", #name " ");\
+            break;\
+        }\
+        ++g_total;                                         \
+        std::printf("  %-55s", #name " ");                 \
+        name##_announce();                                 \
+        name();                                            \
+        ++g_passed;                                        \
+        std::printf("PASS\n");                             \
     } while (0)
 
 #define EXPECT(cond)                                                   \
@@ -457,7 +465,7 @@ TEST(test_stress_write_alias) {
 // Entry point (called from main.cpp)
 // ---------------------------------------------------------------------------
 
-void mailbox2slot_smp_tests() {
+int mailbox2slot_smp_tests() {
     std::printf("=== Mailbox2SlotSmp tests ===\n\n");
 
     std::printf("--- static / compile-time ---\n");
@@ -493,4 +501,5 @@ void mailbox2slot_smp_tests() {
     RUN(test_stress_write_alias);
 
     std::printf("\n  passed: %d / %d\n\n", g_passed, g_total);
+    return 0;
 }
