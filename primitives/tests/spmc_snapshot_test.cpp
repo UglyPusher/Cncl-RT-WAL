@@ -2,7 +2,7 @@
  * spmc_snapshot_test.cpp
  *
  * Unit tests for SPMCSnapshot (SPMC Snapshot Channel, latest-wins).
- * Spec: docs/SPMCSnapshot — RT Contract & Invariants.md (Rev 6.2)
+ * Spec: primitives/docs/SPMCSnapshot — RT Contract & Invariants.md (Rev 6.3)
  *
  * Build (example):
  *   c++ -std=c++20 -O2 -pthread spmc_snapshot_test.cpp -o spmc_snapshot_test
@@ -98,7 +98,7 @@ bool expect_child_abort(Fn&& fn) {
 }
 
 // ---------------------------------------------------------------------------
-// Static / compile-time checks
+// Contract tests: static / compile-time checks
 // ---------------------------------------------------------------------------
 
 TEST(test_static_trivially_copyable) {
@@ -116,7 +116,8 @@ TEST(test_slot_count) {
 }
 
 TEST(test_lock_free_atomics) {
-    EXPECT(std::atomic<uint32_t>::is_always_lock_free);
+    using busy_mask_word_t = SPMCSnapshotCore<Pod32, 2>::busy_mask_word_t;
+    EXPECT(std::atomic<busy_mask_word_t>::is_always_lock_free);
     EXPECT(std::atomic<uint8_t>::is_always_lock_free);
     EXPECT(std::atomic<bool>::is_always_lock_free);
 }
@@ -131,7 +132,7 @@ TEST(test_core_initial_state) {
 }
 
 // ---------------------------------------------------------------------------
-// Single-threaded functional tests
+// Contract tests: behavior
 // ---------------------------------------------------------------------------
 
 TEST(test_try_read_before_publish_returns_false) {
@@ -309,7 +310,7 @@ TEST(test_reader_guard_fail_fast) {
 }
 
 // ---------------------------------------------------------------------------
-// Multi-threaded stress tests
+// Diagnostic stress tests
 //
 // Note on SMP validity: these tests run on x86 (TSO), where the narrow race
 // documented in spec §Theoretical Bounds (load published → fetch_or busy_mask)
@@ -523,7 +524,7 @@ TEST(test_spmc_n2_sustained_cleanup) {
 }
 
 // ---------------------------------------------------------------------------
-// Cache layout checks
+// Implementation tests
 // ---------------------------------------------------------------------------
 
 TEST(test_slot_cacheline_alignment) {
@@ -562,13 +563,13 @@ TEST(test_ctrl_separate_from_slots) {
 int spmc_snapshot_tests() {
     std::printf("=== SPMCSnapshot unit tests ===\n\n");
 
-    std::printf("--- static / compile-time ---\n");
+    std::printf("--- contract: static / compile-time ---\n");
     RUN(test_static_trivially_copyable);
     RUN(test_slot_count);
     RUN(test_lock_free_atomics);
     RUN(test_core_initial_state);
 
-    std::printf("\n--- single-threaded functional ---\n");
+    std::printf("\n--- contract: behavior ---\n");
     RUN(test_try_read_before_publish_returns_false);
     RUN(test_publish_then_read);
     RUN(test_initialized_flag);
@@ -582,18 +583,23 @@ int spmc_snapshot_tests() {
     RUN(test_refcnt_zero_after_reads);
     RUN(test_writer_guard_fail_fast);
     RUN(test_reader_guard_fail_fast);
-
-    std::printf("\n--- multi-threaded stress ---\n");
-    RUN(test_spmc_n1_stress_no_torn_read);
-    RUN(test_spmc_n2_stress_no_torn_read);
-    RUN(test_spmc_n4_stress_no_torn_read);
     RUN(test_spmc_latest_wins_after_writer_done);
-    RUN(test_spmc_n2_sustained_cleanup);
 
-    std::printf("\n--- cache layout ---\n");
+    std::printf("\n--- implementation ---\n");
     RUN(test_slot_cacheline_alignment);
     RUN(test_ctrl_cacheline_alignment);
     RUN(test_ctrl_separate_from_slots);
+
+    std::printf("\n--- diagnostic stress ---\n");
+    if (!stam::tests::should_run_diagnostic_stress()) {
+        std::printf("  (disabled; use --diag-stress or STAM_TEST_DIAG_STRESS=1)\n");
+    }
+    if (stam::tests::should_run_diagnostic_stress()) {
+        RUN(test_spmc_n1_stress_no_torn_read);
+        RUN(test_spmc_n2_stress_no_torn_read);
+        RUN(test_spmc_n4_stress_no_torn_read);
+        RUN(test_spmc_n2_sustained_cleanup);
+    }
 
     std::printf("\n=== Results: %d/%d passed ===\n", g_passed, g_total);
     return (g_failed == 0) ? 0 : 1;

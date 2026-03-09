@@ -347,20 +347,29 @@ public:
     // consumer handle for the same Core.
 
     [[nodiscard]] SPMCSnapshotSmpWriter<T, N> writer() noexcept {
-        if (issued_writer_) {
+        bool expected = false;
+        if (!issued_writer_.compare_exchange_strong(expected, true,
+                                                    std::memory_order_acq_rel,
+                                                    std::memory_order_acquire)) {
             assert(false && "SPMCSnapshotSmp::writer() already issued");
             std::abort();
         }
-        issued_writer_ = true;
         return SPMCSnapshotSmpWriter<T, N>(core_);
     }
 
     [[nodiscard]] SPMCSnapshotSmpReader<T, N> reader() noexcept {
-        if (issued_readers_ >= N) {
-            assert(false && "SPMCSnapshotSmp::reader() limit exceeded");
-            std::abort();
+        uint32_t expected = issued_readers_.load(std::memory_order_acquire);
+        while (true) {
+            if (expected >= N) {
+                assert(false && "SPMCSnapshotSmp::reader() limit exceeded");
+                std::abort();
+            }
+            if (issued_readers_.compare_exchange_weak(expected, expected + 1u,
+                                                      std::memory_order_acq_rel,
+                                                      std::memory_order_acquire)) {
+                break;
+            }
         }
-        ++issued_readers_;
         return SPMCSnapshotSmpReader<T, N>(core_);
     }
 
@@ -369,8 +378,8 @@ public:
 
 private:
     SPMCSnapshotSmpCore<T, N> core_;
-    bool                      issued_writer_ = false;
-    uint32_t                  issued_readers_ = 0;
+    std::atomic<bool>         issued_writer_{false};
+    std::atomic<uint32_t>     issued_readers_{0};
 };
 
 } // namespace stam::primitives

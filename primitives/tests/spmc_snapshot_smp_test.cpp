@@ -2,7 +2,7 @@
  * spmc_snapshot_smp_test.cpp
  *
  * Stress tests for SPMCSnapshotSmp (SPMC Snapshot Channel, SMP-safe).
- * Spec: primitives/docs/SPMCSnapshotSmp - RT Contract & Invariants.md (Rev 1.0)
+ * Spec: primitives/docs/SPMCSnapshotSmp - RT Contract & Invariants.md (Rev 1.1)
  */
 
 #include "stam/primitives/spmc_snapshot_smp.hpp"
@@ -77,6 +77,13 @@ TEST(test_concepts) {
                   "SPMCSnapshotSmpWriter must satisfy SnapshotWriter");
     static_assert(SnapshotReader<SPMCSnapshotSmpReader<Pod32, 2>, Pod32>,
                   "SPMCSnapshotSmpReader must satisfy SnapshotReader");
+}
+
+TEST(test_lock_free_atomics) {
+    using busy_mask_word_t = SPMCSnapshotSmpCore<Pod32, 2>::busy_mask_word_t;
+    EXPECT(std::atomic<busy_mask_word_t>::is_always_lock_free);
+    EXPECT(std::atomic<uint8_t>::is_always_lock_free);
+    EXPECT(std::atomic<bool>::is_always_lock_free);
 }
 
 TEST(test_try_read_before_publish_returns_false) {
@@ -256,11 +263,66 @@ TEST(test_stress_sustained_cleanup) {
     }
 }
 
+// Single-shot SMP behavior diagnostic:
+// after initialization, try_read() may return false when publication changes
+// between claim and re-verify. We report miss/read ratio without hard bound.
+TEST(test_stress_single_shot_miss_rate) {
+    constexpr auto kDuration = std::chrono::milliseconds(200);
+    SPMCSnapshotSmp<Pod32, 2> ch;
+
+    std::atomic<bool> stop{false};
+    std::atomic<int> misses{0};
+    std::atomic<int> reads{0};
+
+    std::thread tw([&] {
+        auto w = ch.writer();
+        int i = 0;
+        while (!stop.load(std::memory_order_relaxed)) {
+            ++i;
+            w.write({i, -i});
+        }
+    });
+
+    auto reader_job = [&] {
+        auto r = ch.reader();
+        Pod32 out{};
+        while (!stop.load(std::memory_order_relaxed)) {
+            if (r.try_read(out)) {
+                reads.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                misses.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    };
+
+    std::thread tr0(reader_job);
+    std::thread tr1(reader_job);
+
+    std::this_thread::sleep_for(kDuration);
+    stop.store(true, std::memory_order_release);
+
+    tw.join();
+    tr0.join();
+    tr1.join();
+
+    const int miss_count = misses.load();
+    const int read_count = reads.load();
+    const int attempts = miss_count + read_count;
+    const double miss_per_attempt = (attempts > 0)
+        ? static_cast<double>(miss_count) / static_cast<double>(attempts)
+        : 0.0;
+    std::printf("    miss/read: %d/%d (miss/attempt=%.6f)\n",
+                miss_count, read_count, miss_per_attempt);
+    EXPECT(attempts > 0);
+    EXPECT(miss_count >= 0 && miss_count <= attempts);
+}
+
 int spmc_snapshot_smp_tests() {
     std::printf("=== SPMCSnapshotSmp tests ===\n\n");
 
     std::printf("--- functional ---\n");
     RUN(test_concepts);
+    RUN(test_lock_free_atomics);
     RUN(test_try_read_before_publish_returns_false);
     RUN(test_write_alias_and_publish_visible);
     RUN(test_refcnt_and_busy_mask_cleanup);
@@ -271,6 +333,7 @@ int spmc_snapshot_smp_tests() {
     RUN(test_stress_n1_no_torn_read);
     RUN(test_stress_n2_no_torn_read);
     RUN(test_stress_sustained_cleanup);
+    RUN(test_stress_single_shot_miss_rate);
 
     std::printf("\n  passed: %d / %d\n\n", g_passed, g_total);
     return 0;

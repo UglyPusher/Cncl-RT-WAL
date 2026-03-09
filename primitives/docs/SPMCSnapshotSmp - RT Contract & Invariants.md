@@ -208,6 +208,11 @@ The primitive is a state channel, not an event queue.
 
 No internal retries are performed.
 
+### Test Coverage Note
+
+The `i2 != i` branch is currently covered by probabilistic diagnostic stress, not by a deterministic forced-interleaving unit test.
+Reference: `primitives/tests/spmc_snapshot_smp_test.cpp`, `test_stress_single_shot_miss_rate`.
+
 ---
 
 ## Type And Compile-time Requirements
@@ -217,7 +222,7 @@ No internal retries are performed.
 * `K <= signal_mask_width` (`busy_mask` is `signal_mask_t`, so `N <= signal_mask_width - 2`)
 * `N <= 254` (`refcnt` is `uint8_t`)
 * `std::is_trivially_copyable<T>::value == true`
-* `std::atomic<uint32_t>::is_always_lock_free == true`
+* `std::atomic<signal_mask_t>::is_always_lock_free == true` (busy_mask word)
 * `std::atomic<uint8_t>::is_always_lock_free == true`
 * `std::atomic<bool>::is_always_lock_free == true`
 * `SYS_CACHELINE_BYTES > 0`
