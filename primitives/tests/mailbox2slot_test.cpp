@@ -2,7 +2,7 @@
  * mailbox2slot_test.cpp
  *
  * Unit tests for Mailbox2Slot (SPSC Snapshot Mailbox).
- * Spec: docs/contracts/Mailbox2Slot.md (Revision 1.3)
+ * Spec: primitives/docs/Mailbox2Slot — RT Contract & Invariants.md
  *
  * Build (example):
  *   c++ -std=c++20 -O2 -pthread mailbox2slot_test.cpp -o mailbox2slot_test
@@ -97,7 +97,7 @@ bool expect_child_abort(Fn&& fn) {
 }
 
 // ---------------------------------------------------------------------------
-// Static / compile-time checks
+// Contract tests: static / compile-time checks
 // ---------------------------------------------------------------------------
 
 TEST(test_static_assert_trivially_copyable) {
@@ -125,7 +125,7 @@ TEST(test_lock_free) {
 }
 
 // ---------------------------------------------------------------------------
-// Single-threaded functional tests
+// Contract tests: behavior
 // ---------------------------------------------------------------------------
 
 TEST(test_try_read_before_publish_returns_false) {
@@ -251,6 +251,30 @@ TEST(test_interleaved_publish_read) {
     }
 }
 
+// Verify latest-wins under concurrent load: after writer finishes,
+// reader must see the last published value.
+TEST(test_spsc_stress_latest_wins) {
+    constexpr int kFrames = 200'000;
+
+    Mailbox2Slot<Pod32> mb;
+
+    std::thread writer_thread([&] {
+        auto writer = mb.writer();
+        for (int i = 1; i <= kFrames; ++i) {
+            writer.publish({i, i});
+        }
+    });
+
+    writer_thread.join();
+
+    // Writer is done — reader must now see the last frame.
+    auto reader = mb.reader();
+    Pod32 out{};
+    bool ok = reader.try_read(out);
+    EXPECT(ok);
+    EXPECT(out.x == kFrames && out.y == kFrames);
+}
+
 TEST(test_writer_guard_fail_fast) {
     const bool aborted = expect_child_abort([] {
         Mailbox2Slot<Pod32> mb;
@@ -270,11 +294,12 @@ TEST(test_reader_guard_fail_fast) {
 }
 
 // ---------------------------------------------------------------------------
-// Multi-threaded stress tests
+// Diagnostic stress tests
 // ---------------------------------------------------------------------------
 
 // Basic SPSC stress: writer publishes N frames, reader reads until it sees
-// the last frame. Verifies no torn reads (x == -y invariant).
+// the last frame. Mailbox2Slot does not guarantee zero torn reads under
+// arbitrary overlap; test reports torn/read as an empirical metric.
 TEST(test_spsc_stress_no_torn_read) {
     constexpr int kFrames = 200'000;
 
@@ -320,34 +345,8 @@ TEST(test_spsc_stress_no_torn_read) {
     EXPECT(mb.core().lock_state.value.load() == kUnlocked);
 }
 
-// Verify latest-wins under concurrent load: after writer finishes,
-// reader must see the last published value.
-TEST(test_spsc_stress_latest_wins) {
-    constexpr int kFrames = 200'000;
-
-    Mailbox2Slot<Pod32> mb;
-    std::atomic<bool> writer_done{false};
-
-    std::thread writer_thread([&] {
-        auto writer = mb.writer();
-        for (int i = 1; i <= kFrames; ++i) {
-            writer.publish({i, i});
-        }
-        writer_done.store(true, std::memory_order_release);
-    });
-
-    writer_thread.join();
-
-    // Writer is done — reader must now see the last frame.
-    auto reader = mb.reader();
-    Pod32 out{};
-    bool ok = reader.try_read(out);
-    EXPECT(ok);
-    EXPECT(out.x == kFrames && out.y == kFrames);
-}
-
 // Sustained concurrent stress: both threads run for a fixed duration.
-// No torn reads allowed.
+// Diagnostic only: contract does not promise torn==0 here.
 TEST(test_spsc_sustained_concurrent) {
     constexpr auto kDuration = std::chrono::milliseconds(200);
 
@@ -397,7 +396,7 @@ TEST(test_spsc_sustained_concurrent) {
 }
 
 // ---------------------------------------------------------------------------
-// Cache layout checks
+// Implementation tests
 // ---------------------------------------------------------------------------
 
 TEST(test_cache_line_separation) {
@@ -415,13 +414,13 @@ TEST(test_cache_line_separation) {
 
 int mailbox2slot_tests() {
     std::printf("=== Mailbox2Slot unit tests ===\n\n");
-    std::printf("--- static / compile-time ---\n");
+    std::printf("--- contract: static / compile-time ---\n");
     RUN(test_static_assert_trivially_copyable);
     RUN(test_state_constants);
     RUN(test_core_initial_state);
     RUN(test_lock_free);
 
-    std::printf("\n--- single-threaded functional ---\n");
+    std::printf("\n--- contract: behavior ---\n");
     RUN(test_try_read_before_publish_returns_false);
     RUN(test_publish_then_read);
     RUN(test_latest_wins);
@@ -431,16 +430,20 @@ int mailbox2slot_tests() {
     RUN(test_lock_state_unlocked_after_true);
     RUN(test_large_pod);
     RUN(test_interleaved_publish_read);
+    RUN(test_spsc_stress_latest_wins);
     RUN(test_writer_guard_fail_fast);
     RUN(test_reader_guard_fail_fast);
 
-    std::printf("\n--- multi-threaded stress ---\n");
-    RUN(test_spsc_stress_no_torn_read);
-    RUN(test_spsc_stress_latest_wins);
-    RUN(test_spsc_sustained_concurrent);
-
-    std::printf("\n--- cache layout ---\n");
+    std::printf("\n--- implementation ---\n");
     RUN(test_cache_line_separation);
+
+    std::printf("\n--- diagnostic stress ---\n");
+    if (stam::tests::should_run_diagnostic_stress()) {
+        RUN(test_spsc_stress_no_torn_read);
+        RUN(test_spsc_sustained_concurrent);
+    } else {
+        std::printf("  diagnostic stress disabled (use --diag-stress or STAM_TEST_DIAG_STRESS=1)\n");
+    }
 
     std::printf("\n=== Results: %d/%d passed ===\n", g_passed, g_total);
     return (g_failed == 0) ? 0 : 1;

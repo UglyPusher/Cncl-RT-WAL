@@ -68,3 +68,20 @@
 Открыто:
 
 - Если потребуется `strict` профиль, нужна отдельная реализация с race-free payload-путём по ISO C++ memory model.
+
+## Mailbox2Slot (статус)
+
+- Тесты разделены по секциям:
+  - `contract: static / compile-time`
+  - `contract: behavior`
+  - `implementation`
+  - `diagnostic stress`
+- Диагностический stress вынесен под флаг:
+  - CLI: `--diag-stress`
+  - ENV: `STAM_TEST_DIAG_STRESS=1`
+- Guard выдачи handle (`writer()` / `reader()`) переведены на атомики (`compare_exchange`).
+- Обновлены ссылки на актуальный контрактный документ в тесте и header.
+
+Открыто:
+
+- Проверить, нужны ли дополнительные contract-тесты на негативные сценарии протокола claim/verify (помимо текущих stress-метрик).

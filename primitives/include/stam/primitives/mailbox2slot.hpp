@@ -57,7 +57,7 @@ namespace stam::primitives {
  *  - Exceeding either limit triggers fail-fast (assert + abort).
  *  - Other contract violations result in undefined behavior.
  *
- * SPEC: docs/contracts/Mailbox2Slot.md (Revision 1.4)
+ * SPEC: primitives/docs/Mailbox2Slot — RT Contract & Invariants.md
  */
 
 // ============================================================================
@@ -338,20 +338,24 @@ public:
     Mailbox2Slot& operator=(const Mailbox2Slot&) = delete;
 
     [[nodiscard]] Mailbox2SlotWriter<T> writer() noexcept {
-        if (issued_writer_) {
+        bool expected = false;
+        if (!issued_writer_.compare_exchange_strong(expected, true,
+                                                    std::memory_order_acq_rel,
+                                                    std::memory_order_acquire)) {
             assert(false && "Mailbox2Slot::writer() already issued");
             std::abort();
         }
-        issued_writer_ = true;
         return Mailbox2SlotWriter<T>(core_);
     }
 
     [[nodiscard]] Mailbox2SlotReader<T> reader() noexcept {
-        if (issued_reader_) {
+        bool expected = false;
+        if (!issued_reader_.compare_exchange_strong(expected, true,
+                                                    std::memory_order_acq_rel,
+                                                    std::memory_order_acquire)) {
             assert(false && "Mailbox2Slot::reader() already issued");
             std::abort();
         }
-        issued_reader_ = true;
         return Mailbox2SlotReader<T>(core_);
     }
 
@@ -360,8 +364,8 @@ public:
 
 private:
     Mailbox2SlotCore<T> core_{};
-    bool                issued_writer_ = false;
-    bool                issued_reader_ = false;
+    std::atomic<bool>   issued_writer_{false};
+    std::atomic<bool>   issued_reader_{false};
 };
 
 } // namespace stam::primitives
