@@ -8,6 +8,7 @@
  */
 
 #include "stam/primitives/dbl_buffer_seqlock.hpp"
+#include "test_filter.hpp"
 #include "stam/primitives/snapshot_concepts.hpp"
 #include "stam/sys/sys_align.hpp"
 
@@ -30,15 +31,22 @@ using namespace stam::primitives;
 static int g_total  = 0;
 static int g_passed = 0;
 
-#define TEST(name) static void name()
+static constexpr const char* kSuiteName = "dbl_buffer_seqlock";
 
-#define RUN(name)                                            \
-    do {                                                     \
-        ++g_total;                                           \
-        std::printf("  %-55s", #name " ");                   \
-        name();                                              \
-        ++g_passed;                                          \
-        std::printf("PASS\n");                               \
+#define TEST(name) static void name(); static void name##_announce() { std::printf("[RUN] %s\n", #name); } static void name()
+
+#define RUN(name)                                          \
+    do {                                                   \
+        if (!stam::tests::should_run_test(kSuiteName, #name)) {\
+            std::printf("  %-55sSKIP\n", #name " ");\
+            break;\
+        }\
+        ++g_total;                                         \
+        std::printf("  %-55s", #name " ");                 \
+        name##_announce();                                 \
+        name();                                            \
+        ++g_passed;                                        \
+        std::printf("PASS\n");                             \
     } while (0)
 
 #define EXPECT(cond)                                                   \
@@ -84,7 +92,7 @@ bool expect_child_abort(Fn&& fn) {
 }
 
 // ---------------------------------------------------------------------------
-// Static / compile-time checks
+// Contract tests: static / compile-time checks
 // ---------------------------------------------------------------------------
 
 TEST(test_static_trivially_copyable) {
@@ -121,14 +129,8 @@ TEST(test_try_read_before_write_returns_true) {
     EXPECT(reader.try_read(out) == true);
 }
 
-TEST(test_seq_initial_value) {
-    // seq starts at 0 (even = quiescent).
-    DoubleBufferSeqLock<Pod32> ch;
-    EXPECT(ch.core().ctrl.seq.load(std::memory_order_relaxed) == 0u);
-}
-
 // ---------------------------------------------------------------------------
-// Single-threaded functional tests
+// Contract tests: behavior
 // ---------------------------------------------------------------------------
 
 TEST(test_write_then_read) {
@@ -239,8 +241,14 @@ TEST(test_reader_guard_fail_fast) {
 }
 
 // ---------------------------------------------------------------------------
-// Cache layout checks
+// Implementation tests
 // ---------------------------------------------------------------------------
+
+TEST(test_seq_initial_value) {
+    // seq starts at 0 (even = quiescent).
+    DoubleBufferSeqLock<Pod32> ch;
+    EXPECT(ch.core().ctrl.seq.load(std::memory_order_relaxed) == 0u);
+}
 
 TEST(test_seq_cacheline_alignment) {
     DoubleBufferSeqLock<Pod32> ch;
@@ -265,7 +273,7 @@ TEST(test_seq_separate_from_slot) {
 }
 
 // ---------------------------------------------------------------------------
-// Multi-threaded stress tests
+// Contract tests: multi-threaded behavior
 // ---------------------------------------------------------------------------
 
 // Basic SMP stress: writer and reader on separate threads.
@@ -362,6 +370,10 @@ TEST(test_stress_latest_wins_after_writer_done) {
     EXPECT(out.x == kFrames && out.y == kFrames);
 }
 
+// ---------------------------------------------------------------------------
+// Diagnostic stress tests
+// ---------------------------------------------------------------------------
+
 // Sustained concurrent stress: both threads run for a fixed duration.
 TEST(test_stress_sustained) {
     constexpr auto kDuration = std::chrono::milliseconds(200);
@@ -409,18 +421,17 @@ TEST(test_stress_sustained) {
 // Entry point (called from main.cpp)
 // ---------------------------------------------------------------------------
 
-void dbl_buffer_seqlock_tests() {
+int dbl_buffer_seqlock_tests() {
     std::printf("=== DoubleBufferSeqLock tests ===\n\n");
 
-    std::printf("--- static / compile-time ---\n");
+    std::printf("--- contract: static / compile-time ---\n");
     RUN(test_static_trivially_copyable);
     RUN(test_lock_free_atomics);
     RUN(test_concepts);
     RUN(test_initial_state_zero);
     RUN(test_try_read_before_write_returns_true);
-    RUN(test_seq_initial_value);
 
-    std::printf("\n--- single-threaded functional ---\n");
+    std::printf("\n--- contract: behavior ---\n");
     RUN(test_write_then_read);
     RUN(test_try_read_after_write);
     RUN(test_latest_wins);
@@ -430,17 +441,23 @@ void dbl_buffer_seqlock_tests() {
     RUN(test_write_alias);
     RUN(test_writer_guard_fail_fast);
     RUN(test_reader_guard_fail_fast);
+    RUN(test_stress_no_torn_read);
+    RUN(test_stress_try_read_no_torn_read);
+    RUN(test_stress_latest_wins_after_writer_done);
 
-    std::printf("\n--- cache layout ---\n");
+    std::printf("\n--- implementation ---\n");
+    RUN(test_seq_initial_value);
     RUN(test_seq_cacheline_alignment);
     RUN(test_slot_cacheline_alignment);
     RUN(test_seq_separate_from_slot);
 
-    std::printf("\n--- multi-threaded stress ---\n");
-    RUN(test_stress_no_torn_read);
-    RUN(test_stress_try_read_no_torn_read);
-    RUN(test_stress_latest_wins_after_writer_done);
-    RUN(test_stress_sustained);
+    std::printf("\n--- diagnostic stress ---\n");
+    if (stam::tests::should_run_diagnostic_stress()) {
+        RUN(test_stress_sustained);
+    } else {
+        std::printf("  diagnostic stress disabled (use --diag-stress or STAM_TEST_DIAG_STRESS=1)\n");
+    }
 
     std::printf("\n  passed: %d / %d\n\n", g_passed, g_total);
+    return 0;
 }

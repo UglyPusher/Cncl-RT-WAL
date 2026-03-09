@@ -31,6 +31,19 @@ Handle issuance guards in code rely on this contract.
 
 ---
 
+## 0.2 Portability Profiles
+
+This contract defines two deployment profiles:
+
+- `strict` profile: requires strict ISO C++ memory-model compliance (no data race semantics on payload access).
+- `platform-optimized` profile: allows the classic seqlock payload pattern used here (reader may copy overlapping bytes and discard by re-verify), and is valid only on validated target/toolchain combinations.
+
+Current implementation targets `platform-optimized` profile and this is the product default.
+`strict` profile is documented as a portability target but is not implemented in this class.
+If `strict` profile is required, use an alternative design where payload reads/writes are race-free by C++ definition.
+
+---
+
 ## 1. Semantic Model
 
 `DoubleBufferSeqLock` implements a one-slot seqlock snapshot model:
@@ -80,6 +93,7 @@ Invariants:
 - Reader treats odd `seq` as unstable and retries.
 - Reader accepts payload only when `s1 == s2` and both are even.
 - `seq` changes by `+1` on open and `+1` on close, preserving monotonic parity protocol.
+- Wrap-around safety condition: between reader's `s1` and `s2` loads, writer must not advance `seq` by `2^32` steps (equivalently, `2^31` full write cycles). Otherwise `s1 == s2` may hold after wrap-around.
 
 ---
 
@@ -130,6 +144,11 @@ Note:
 
 - Reader may transiently copy torn bytes during overlap, but such copies are
   discarded by re-verify and never accepted.
+- The statement above is protocol-level. Under strict ISO C++ memory-model interpretation this payload overlap is not portable; it is accepted here only in `platform-optimized` profile.
+
+Bound:
+
+- Reader progress assumption: writer must not outrun one reader attempt by `2^31` write cycles (`2^32` sequence increments), otherwise sequence wrap-around can invalidate the equality check.
 
 ---
 

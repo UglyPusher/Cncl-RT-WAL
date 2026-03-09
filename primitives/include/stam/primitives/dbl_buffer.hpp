@@ -33,6 +33,9 @@ namespace stam::primitives {
  *    a single CPU: if the consumer is preempted after loading `published`
  *    but before copying buffers[idx], and the producer completes two writes
  *    during that window, the slot the consumer is about to read is recycled.
+ *  - Such overlap is outside this contract and must be treated as undefined
+ *    behavior for snapshot integrity. Torn reads are a typical symptom, not
+ *    a guaranteed or bounded failure mode.
  *  - The caller is responsible for ensuring non-overlap via scheduling
  *    policy, application-level rate contract, IRQ masking, or a
  *    non-preemptible region. See contract doc §4.1 for sufficient conditions.
@@ -207,20 +210,24 @@ public:
     DoubleBuffer& operator=(const DoubleBuffer&) = delete;
 
     [[nodiscard]] DoubleBufferWriter<T> writer() noexcept {
-        if (issued_writer_) {
+        bool expected = false;
+        if (!issued_writer_.compare_exchange_strong(expected, true,
+                                                    std::memory_order_acq_rel,
+                                                    std::memory_order_acquire)) {
             assert(false && "DoubleBuffer::writer() already issued");
             std::abort();
         }
-        issued_writer_ = true;
         return DoubleBufferWriter<T>(core_);
     }
 
     [[nodiscard]] DoubleBufferReader<T> reader() const noexcept {
-        if (issued_reader_) {
+        bool expected = false;
+        if (!issued_reader_.compare_exchange_strong(expected, true,
+                                                    std::memory_order_acq_rel,
+                                                    std::memory_order_acquire)) {
             assert(false && "DoubleBuffer::reader() already issued");
             std::abort();
         }
-        issued_reader_ = true;
         return DoubleBufferReader<T>(core_);
     }
 
@@ -232,8 +239,8 @@ private:
     // Value-initialized on purpose: provides deterministic zero state,
     // while keeping "no data yet" semantically unspecified.
     DoubleBufferCore<T> core_{};
-    bool                issued_writer_ = false;
-    mutable bool        issued_reader_ = false;
+    std::atomic<bool>   issued_writer_{false};
+    mutable std::atomic<bool> issued_reader_{false};
 };
 
 } // namespace stam::primitives
