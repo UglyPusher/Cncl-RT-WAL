@@ -15,6 +15,7 @@ set(STAM_TEST_SOURCES
     mailbox2slot_test.cpp
     mailbox2slot_smp_test.cpp
     spsc_ring_test.cpp
+    spsc_ring_drop_oldest_test.cpp
     spmc_snapshot_test.cpp
     spmc_snapshot_smp_test.cpp
 )
@@ -81,5 +82,6 @@ add_stam_suite_test(stam_dbl_buffer_seqlock_tests dbl_buffer_seqlock_test.cpp db
 add_stam_suite_test(stam_mailbox2slot_tests       mailbox2slot_test.cpp      mailbox2slot_tests)
 add_stam_suite_test(stam_mailbox2slot_smp_tests   mailbox2slot_smp_test.cpp  mailbox2slot_smp_tests)
 add_stam_suite_test(stam_spsc_ring_tests          spsc_ring_test.cpp         spsc_ring_tests)
+add_stam_suite_test(stam_spsc_ring_drop_oldest_tests spsc_ring_drop_oldest_test.cpp spsc_ring_drop_oldest_tests)
 add_stam_suite_test(stam_spmc_snapshot_tests      spmc_snapshot_test.cpp     spmc_snapshot_tests)
 add_stam_suite_test(stam_spmc_snapshot_smp_tests  spmc_snapshot_smp_test.cpp spmc_snapshot_smp_tests)

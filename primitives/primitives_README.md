@@ -31,7 +31,7 @@ system-level contract and is the caller's responsibility (see contract §4.1).
 
 | File | Documentation |
 |---|---|
-| `dbl_buffer.hpp` | [`docs/contracts/DoubleBuffer - RT Contract & Invariants.md`](../../../docs/contracts/DoubleBuffer%20—%20RT%20Contract%20&%20Invariants.md) |
+| `dbl_buffer.hpp` | [`docs/DoubleBuffer — RT Contract & Invariants.md`](docs/DoubleBuffer%20—%20RT%20Contract%20%26%20Invariants.md) |
 
 ---
 
@@ -56,7 +56,7 @@ previous (sticky) state. No retry: miss = next tick.
 
 | File | Documentation |
 |---|---|
-| `mailbox2slot.hpp` | [`docs/contracts/Mailbox2Slot_v1.3 - RT Contract & Invariants.md`](../../../docs/contracts/Mailbox2Slot_v1.3%20—%20RT%20Contract%20&%20Invariants.md) |
+| `mailbox2slot.hpp` | [`docs/Mailbox2Slot — RT Contract & Invariants.md`](docs/Mailbox2Slot%20—%20RT%20Contract%20%26%20Invariants.md) |
 
 ---
 
@@ -88,7 +88,7 @@ after that always returns `true`.
 
 | File | Documentation |
 |---|---|
-| `spmc_snapshot.hpp` | [`docs/SPMCSnapshot — RT Contract & Invariants.md`](../docs/SPMCSnapshot%20—%20RT%20Contract%20%26%20Invariants.md) |
+| `spmc_snapshot.hpp` | [`docs/SPMCSnapshot — RT Contract & Invariants.md`](docs/SPMCSnapshot%20—%20RT%20Contract%20%26%20Invariants.md) |
 
 ---
 
@@ -135,7 +135,7 @@ Usable capacity: `usable = Capacity - 1`
 
 | File | Documentation |
 |---|---|
-| `spsc_ring.hpp` | [`docs/contracts/SPSCRing - RT Contract & Invariants.md`](../../../docs/contracts/SPSCRing%20—%20RT%20Contract%20&%20Invariants.md) |
+| `spsc_ring.hpp` | [`docs/SPSCRing — RT Contract & Invariants.md`](docs/SPSCRing%20—%20RT%20Contract%20%26%20Invariants.md) |
 
 ---
 

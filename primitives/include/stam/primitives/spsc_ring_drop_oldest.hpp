@@ -11,54 +11,37 @@
 namespace stam::primitives {
 
 /*
- * SPSCRing — Single-Producer Single-Consumer lock-free ring buffer.
- *
- * CONTRACT (hard requirements):
- *  - exactly 1 producer (writer) and exactly 1 consumer (reader)
- *  - producer: push-only; consumer: pop-only
- *  - producer is NOT re-entrant (no nested IRQ/NMI calling push())
- *  - consumer is NOT re-entrant
- *  - T is trivially copyable (bounded, deterministic copy; no ctor/dtor)
- *  - Capacity must be a power of two and >= 2
+ * SPSCRingDropOldest — SPSC ring buffer with drop-oldest overflow policy.
  *
  * SEMANTICS:
- *  - Queue / log primitive: every pushed item is delivered in FIFO order.
- *  - No items are lost unless the ring is full (push() returns false).
- *  - Unlike DoubleBuffer/Mailbox2Slot, intermediate items are NOT dropped.
+ *  - FIFO delivery for all retained items.
+ *  - When full, push() drops the oldest item (advances tail) and succeeds.
+ *  - Intended for "latest-wins" streams where the newest data matters most.
  *
- * RT APPLICABILITY:
- *  - push(): wait-free, O(1), no loops/CAS/mutex/syscalls/allocations
- *  - pop():  wait-free, O(1), no loops/CAS/mutex/syscalls/allocations
- *
- * CAPACITY:
- *  - Usable slots = Capacity - 1 (one slot reserved as full/empty sentinel).
- *
- * MISUSE:
- *  - writer() may be issued at most once per primitive lifetime.
- *  - reader() may be issued at most once per primitive lifetime.
- *  - Exceeding either limit triggers fail-fast (assert + abort).
- *  - Other contract violations result in undefined behavior
- *    with respect to the intended semantics of this component.
+ * NOTE:
+ *  - Unlike SPSCRing, the producer may advance tail_ to drop the oldest item.
+ *  - This is safe because the producer never overwrites a slot that could be
+ *    concurrently read; it writes only into the reserved empty slot.
  */
 
 // ============================================================================
 // Forward declarations
 // ============================================================================
 
-template <typename T, size_t Capacity> class SPSCRingWriter;
-template <typename T, size_t Capacity> class SPSCRingReader;
+template <typename T, size_t Capacity> class SPSCRingDropOldestWriter;
+template <typename T, size_t Capacity> class SPSCRingDropOldestReader;
 
 // ============================================================================
 // Core (shared state carrier)
 // ============================================================================
 
 template <typename T, size_t Capacity>
-struct SPSCRingCore final {
+struct SPSCRingDropOldestCore final {
     static_assert(Capacity >= 2 && (Capacity & (Capacity - 1)) == 0,
                   "Capacity must be a power of two and >= 2");
 
     static_assert(std::is_trivially_copyable_v<T>,
-                  "SPSCRing requires trivially copyable T");
+                  "SPSCRingDropOldest requires trivially copyable T");
 
     static_assert(SYS_CACHELINE_BYTES > 0,
                   "SYS_CACHELINE_BYTES must be defined by portability layer");
@@ -67,21 +50,20 @@ struct SPSCRingCore final {
     // Fields are public to make layout and invariants explicit and auditable.
     // Friend declarations document intent: only Writer/Reader access Core.
 
-    friend class SPSCRingWriter<T, Capacity>;
-    friend class SPSCRingReader<T, Capacity>;
+    friend class SPSCRingDropOldestWriter<T, Capacity>;
+    friend class SPSCRingDropOldestReader<T, Capacity>;
 
-    // head_: index of the next slot to write into.
-    // Written by writer (release), read by writer (relaxed) + reader (acquire).
+    // head_: index of the next slot to write into (producer-owned).
+    // Written by producer (release), read by producer (relaxed) + consumer (acquire).
     SYS_CACHELINE_ALIGN std::atomic<size_t> head_{0};
 
     // tail_: index of the next slot to read from.
-    // Written by reader (release), read by reader (relaxed) + writer (acquire).
+    // Written by consumer (release); producer may advance tail_ (release)
+    // only on overflow to drop the oldest item.
     SYS_CACHELINE_ALIGN std::atomic<size_t> tail_{0};
 
     // Padding between tail_ and buffer_[0]:
     // Ensures buffer_[0] does not share a cache line with tail_.
-    // Without this, a reader advancing tail_ would invalidate the cache line
-    // containing the first buffer slots, creating false sharing with the writer.
     char pad_[SYS_CACHELINE_BYTES];
 
     SYS_CACHELINE_ALIGN T buffer_[Capacity];
@@ -95,38 +77,47 @@ struct SPSCRingCore final {
 // ============================================================================
 
 template <typename T, size_t Capacity>
-class SPSCRingWriter final {
+class SPSCRingDropOldestWriter final {
 public:
-    explicit SPSCRingWriter(SPSCRingCore<T, Capacity>& core) noexcept
+    explicit SPSCRingDropOldestWriter(SPSCRingDropOldestCore<T, Capacity>& core) noexcept
         : core_(core) {}
 
-    SPSCRingWriter(const SPSCRingWriter&)            = delete;
-    SPSCRingWriter& operator=(const SPSCRingWriter&) = delete;
+    SPSCRingDropOldestWriter(const SPSCRingDropOldestWriter&)            = delete;
+    SPSCRingDropOldestWriter& operator=(const SPSCRingDropOldestWriter&) = delete;
 
     // Move = transfer of producer role (not duplication).
-    SPSCRingWriter(SPSCRingWriter&&) noexcept            = default;
-    SPSCRingWriter& operator=(SPSCRingWriter&&) noexcept = default;
+    SPSCRingDropOldestWriter(SPSCRingDropOldestWriter&&) noexcept            = default;
+    SPSCRingDropOldestWriter& operator=(SPSCRingDropOldestWriter&&) noexcept = default;
 
     // Push an item into the ring (wait-free, bounded).
-    // Returns true on success, false if the ring is full.
+    // If full, drops the oldest item and still enqueues the new one.
     //
-    // Memory ordering:
-    //  - head_ loaded relaxed: producer owns head_, no synchronization needed.
-    //  - tail_ loaded acquire: establishes happens-before with reader's
-    //    release-store of tail_, ensuring the slot we're about to write
-    //    has already been vacated by the reader.
-    //  - head_ stored release: makes the written item visible to the reader.
+    // Returns true  → enqueued without dropping.
+    // Returns false → exactly one oldest element was dropped to make room.
     [[nodiscard]] bool push(const T& item) noexcept {
         const size_t head      = core_.head_.load(std::memory_order_relaxed);
         const size_t next_head = (head + 1) & (Capacity - 1);
 
-        if (next_head == core_.tail_.load(std::memory_order_acquire)) {
-            return false;  // ring is full
+        const size_t tail = core_.tail_.load(std::memory_order_acquire);
+        const bool   full = (next_head == tail);
+
+        bool dropped = false;
+        if (full) {
+            const size_t next_tail = (tail + 1) & (Capacity - 1);
+            // Do not "store" tail directly: consumer owns tail_ and may have advanced
+            // it since our load. A stale store could roll tail_ backwards.
+            //
+            // Single CAS attempt keeps push() O(1) (no loops). If CAS fails, it means
+            // the consumer advanced tail_ and the ring is no longer full.
+            size_t expected = tail;
+            dropped = core_.tail_.compare_exchange_strong(expected, next_tail,
+                                                          std::memory_order_release,
+                                                          std::memory_order_relaxed);
         }
 
         core_.buffer_[head] = item;
         core_.head_.store(next_head, std::memory_order_release);
-        return true;
+        return !dropped;
     }
 
     // Approximate occupancy — telemetry only.
@@ -140,7 +131,7 @@ public:
     static constexpr size_t usable_capacity() noexcept { return Capacity - 1; }
 
 private:
-    SPSCRingCore<T, Capacity>& core_;
+    SPSCRingDropOldestCore<T, Capacity>& core_;
 };
 
 // ============================================================================
@@ -148,27 +139,20 @@ private:
 // ============================================================================
 
 template <typename T, size_t Capacity>
-class SPSCRingReader final {
+class SPSCRingDropOldestReader final {
 public:
-    explicit SPSCRingReader(SPSCRingCore<T, Capacity>& core) noexcept
+    explicit SPSCRingDropOldestReader(SPSCRingDropOldestCore<T, Capacity>& core) noexcept
         : core_(core) {}
 
-    SPSCRingReader(const SPSCRingReader&)            = delete;
-    SPSCRingReader& operator=(const SPSCRingReader&) = delete;
+    SPSCRingDropOldestReader(const SPSCRingDropOldestReader&)            = delete;
+    SPSCRingDropOldestReader& operator=(const SPSCRingDropOldestReader&) = delete;
 
     // Move = transfer of consumer role (not duplication).
-    SPSCRingReader(SPSCRingReader&&) noexcept            = default;
-    SPSCRingReader& operator=(SPSCRingReader&&) noexcept = default;
+    SPSCRingDropOldestReader(SPSCRingDropOldestReader&&) noexcept            = default;
+    SPSCRingDropOldestReader& operator=(SPSCRingDropOldestReader&&) noexcept = default;
 
     // Pop an item from the ring (wait-free, bounded).
     // Returns true on success, false if the ring is empty.
-    //
-    // Memory ordering:
-    //  - tail_ loaded relaxed: consumer owns tail_, no synchronization needed.
-    //  - head_ loaded acquire: establishes happens-before with producer's
-    //    release-store of head_, ensuring the item we're about to read
-    //    has been fully written by the producer.
-    //  - tail_ stored release: makes the vacated slot visible to the producer.
     [[nodiscard]] bool pop(T& item) noexcept {
         const size_t tail = core_.tail_.load(std::memory_order_relaxed);
 
@@ -191,7 +175,7 @@ public:
     static constexpr size_t usable_capacity() noexcept { return Capacity - 1; }
 
 private:
-    SPSCRingCore<T, Capacity>& core_;
+    SPSCRingDropOldestCore<T, Capacity>& core_;
 };
 
 // ============================================================================
@@ -199,44 +183,44 @@ private:
 // ============================================================================
 
 template <typename T, size_t Capacity>
-class SPSCRing final {
+class SPSCRingDropOldest final {
 public:
     static constexpr size_t max_readers = 1;
 
-    SPSCRing() = default;
+    SPSCRingDropOldest() = default;
 
-    SPSCRing(const SPSCRing&)            = delete;
-    SPSCRing& operator=(const SPSCRing&) = delete;
+    SPSCRingDropOldest(const SPSCRingDropOldest&)            = delete;
+    SPSCRingDropOldest& operator=(const SPSCRingDropOldest&) = delete;
 
-    [[nodiscard]] SPSCRingWriter<T, Capacity> writer() noexcept {
+    [[nodiscard]] SPSCRingDropOldestWriter<T, Capacity> writer() noexcept {
         bool expected = false;
         if (!issued_writer_.compare_exchange_strong(expected, true,
                                                     std::memory_order_acq_rel,
                                                     std::memory_order_acquire)) {
-            assert(false && "SPSCRing::writer() already issued");
+            assert(false && "SPSCRingDropOldest::writer() already issued");
             std::abort();
         }
-        return SPSCRingWriter<T, Capacity>(core_);
+        return SPSCRingDropOldestWriter<T, Capacity>(core_);
     }
 
-    [[nodiscard]] SPSCRingReader<T, Capacity> reader() noexcept {
+    [[nodiscard]] SPSCRingDropOldestReader<T, Capacity> reader() noexcept {
         bool expected = false;
         if (!issued_reader_.compare_exchange_strong(expected, true,
                                                     std::memory_order_acq_rel,
                                                     std::memory_order_acquire)) {
-            assert(false && "SPSCRing::reader() already issued");
+            assert(false && "SPSCRingDropOldest::reader() already issued");
             std::abort();
         }
-        return SPSCRingReader<T, Capacity>(core_);
+        return SPSCRingDropOldestReader<T, Capacity>(core_);
     }
 
-    SPSCRingCore<T, Capacity>&       core() noexcept       { return core_; }
-    const SPSCRingCore<T, Capacity>& core() const noexcept { return core_; }
+    SPSCRingDropOldestCore<T, Capacity>&       core() noexcept       { return core_; }
+    const SPSCRingDropOldestCore<T, Capacity>& core() const noexcept { return core_; }
 
 private:
-    SPSCRingCore<T, Capacity> core_{};
-    std::atomic<bool>         issued_writer_{false};
-    std::atomic<bool>         issued_reader_{false};
+    SPSCRingDropOldestCore<T, Capacity> core_{};
+    std::atomic<bool>                  issued_writer_{false};
+    std::atomic<bool>                  issued_reader_{false};
 };
 
 } // namespace stam::primitives

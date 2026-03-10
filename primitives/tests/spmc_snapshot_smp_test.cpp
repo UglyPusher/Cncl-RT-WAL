@@ -6,7 +6,7 @@
  */
 
 #include "stam/primitives/spmc_snapshot_smp.hpp"
-#include "test_filter.hpp"
+#include "test_harness.hpp"
 #include "stam/primitives/snapshot_concepts.hpp"
 #include "stam/sys/sys_align.hpp"
 
@@ -25,52 +25,16 @@ static int g_total  = 0;
 static int g_passed = 0;
 
 static constexpr const char* kSuiteName = "spmc_snapshot_smp";
+static int g_failed = 0;
 
-#define TEST(name) static void name(); static void name##_announce() { std::printf("[RUN] %s\n", #name); } static void name()
-
-#define RUN(name)                                          \
-    do {                                                   \
-        if (!stam::tests::should_run_test(kSuiteName, #name)) {\
-            std::printf("  %-55sSKIP\n", #name " ");\
-            break;\
-        }\
-        ++g_total;                                         \
-        std::printf("  %-55s", #name " ");                 \
-        name##_announce();                                 \
-        name();                                            \
-        ++g_passed;                                        \
-        std::printf("PASS\n");                             \
-    } while (0)
-
-#define EXPECT(cond)                                                   \
-    do {                                                               \
-        if (!(cond)) {                                                 \
-            std::printf("FAIL\n  assertion failed: %s\n"               \
-                        "  at %s:%d\n", #cond, __FILE__, __LINE__);    \
-            std::abort();                                              \
-        }                                                              \
-    } while (0)
+// TEST/RUN/EXPECT provided by test_harness.hpp
 
 struct Pod32 {
     int32_t x{0};
     int32_t y{0};
 };
 
-template <class Fn>
-bool expect_child_abort(Fn&& fn) {
-    const pid_t pid = ::fork();
-    EXPECT(pid >= 0);
-
-    if (pid == 0) {
-        fn();
-        std::fflush(stdout);
-        _Exit(0);
-    }
-
-    int status = 0;
-    EXPECT(::waitpid(pid, &status, 0) == pid);
-    return WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
-}
+// expect_child_abort provided by test_harness.hpp
 
 TEST(test_concepts) {
     static_assert(SnapshotWriter<SPMCSnapshotSmpWriter<Pod32, 2>, Pod32>,
@@ -123,19 +87,16 @@ TEST(test_refcnt_and_busy_mask_cleanup) {
 }
 
 TEST(test_writer_guard_fail_fast) {
-    const bool aborted = expect_child_abort([] {
-        SPMCSnapshotSmp<Pod32, 2> ch;
-        (void)ch.writer();
+    SPMCSnapshotSmp<Pod32, 2> ch;
+    const bool aborted = stam::tests::expect_double_issue_abort([&] {
         (void)ch.writer();
     });
     EXPECT(aborted);
 }
 
 TEST(test_reader_guard_fail_fast) {
-    const bool aborted = expect_child_abort([] {
-        SPMCSnapshotSmp<Pod32, 2> ch;
-        (void)ch.reader();
-        (void)ch.reader();
+    SPMCSnapshotSmp<Pod32, 2> ch;
+    const bool aborted = stam::tests::expect_issue_limit_abort(2, [&] {
         (void)ch.reader();
     });
     EXPECT(aborted);
@@ -256,7 +217,7 @@ TEST(test_stress_sustained_cleanup) {
         : 0.0;
     std::printf("    torn/read: %d/%d (%.6f)\n", torn_count, read_count, torn_per_read);
     EXPECT(read_count > 0);
-    EXPECT(torn_count >= 0 && torn_count <= read_count);
+    EXPECT(torn_count == 0);
     EXPECT(ch.core().ctrl.busy_mask.load(std::memory_order_acquire) == 0u);
     for (uint32_t i = 0; i < ch.core().K; ++i) {
         EXPECT(ch.core().refcnt[i].load(std::memory_order_acquire) == 0u);

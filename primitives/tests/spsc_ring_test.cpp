@@ -2,6 +2,7 @@
  * spsc_ring_test.cpp
  *
  * Unit tests for SPSCRing (SPSC lock-free ring buffer).
+ * Spec: primitives/docs/SPSCRing — RT Contract & Invariants.md
  *
  * Key semantic differences from DoubleBuffer/Mailbox2Slot tested here:
  *  - Queue semantics: every pushed item is delivered in FIFO order
@@ -17,7 +18,7 @@
  */
 
 #include "stam/primitives/spsc_ring.hpp"
-#include "test_filter.hpp"
+#include "test_harness.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -40,31 +41,7 @@ static int g_passed = 0;
 static constexpr const char* kSuiteName = "spsc_ring";
 static int g_failed = 0;
 
-#define TEST(name) static void name(); static void name##_announce() { std::printf("[RUN] %s\n", #name); } static void name()
-
-#define RUN(name)                                          \
-    do {                                                   \
-        if (!stam::tests::should_run_test(kSuiteName, #name)) {\
-            std::printf("  %-55sSKIP\n", #name " ");\
-            break;\
-        }\
-        ++g_total;                                         \
-        std::printf("  %-55s", #name " ");                 \
-        name##_announce();                                 \
-        name();                                            \
-        ++g_passed;                                        \
-        std::printf("PASS\n");                             \
-    } while (0)
-
-#define EXPECT(cond)                                               \
-    do {                                                           \
-        if (!(cond)) {                                             \
-            ++g_failed;                                            \
-            std::printf("FAIL\n  assertion failed: %s\n"          \
-                        "  at %s:%d\n", #cond, __FILE__, __LINE__);\
-            std::abort();                                          \
-        }                                                          \
-    } while (0)
+// TEST/RUN/EXPECT provided by test_harness.hpp
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -83,26 +60,12 @@ struct LargePod {
     }
 };
 
-template <class Fn>
-bool expect_child_abort(Fn&& fn) {
-    const pid_t pid = ::fork();
-    EXPECT(pid >= 0);
-
-    if (pid == 0) {
-        fn();
-        std::fflush(stdout);
-        _Exit(0);
-    }
-
-    int status = 0;
-    EXPECT(::waitpid(pid, &status, 0) == pid);
-    return WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
-}
+// expect_child_abort provided by test_harness.hpp
 
 static constexpr size_t kCap = 16;  // power of two, usable = 15
 
 // ---------------------------------------------------------------------------
-// Static / compile-time checks
+// Contract tests: static / compile-time checks
 // ---------------------------------------------------------------------------
 
 TEST(test_static_assert_trivially_copyable) {
@@ -126,7 +89,7 @@ TEST(test_usable_capacity) {
 }
 
 // ---------------------------------------------------------------------------
-// Single-threaded functional tests
+// Contract tests: behavior
 // ---------------------------------------------------------------------------
 
 // Semantic difference #1: pop() on empty ring returns false, not zero-init T.
@@ -284,25 +247,23 @@ TEST(test_wrap_around) {
 }
 
 TEST(test_writer_guard_fail_fast) {
-    const bool aborted = expect_child_abort([] {
-        SPSCRing<Pod32, kCap> ring;
-        (void)ring.writer();
+    SPSCRing<Pod32, kCap> ring;
+    const bool aborted = stam::tests::expect_double_issue_abort([&] {
         (void)ring.writer();
     });
     EXPECT(aborted);
 }
 
 TEST(test_reader_guard_fail_fast) {
-    const bool aborted = expect_child_abort([] {
-        SPSCRing<Pod32, kCap> ring;
-        (void)ring.reader();
+    SPSCRing<Pod32, kCap> ring;
+    const bool aborted = stam::tests::expect_double_issue_abort([&] {
         (void)ring.reader();
     });
     EXPECT(aborted);
 }
 
 // ---------------------------------------------------------------------------
-// Multi-threaded stress tests
+// Diagnostic stress tests
 // ---------------------------------------------------------------------------
 
 // All pushed items must arrive, in FIFO order, with no loss.
@@ -425,7 +386,7 @@ TEST(test_spsc_sustained_concurrent) {
 }
 
 // ---------------------------------------------------------------------------
-// Cache layout checks
+// Implementation tests
 // ---------------------------------------------------------------------------
 
 TEST(test_head_tail_on_separate_cache_lines) {
@@ -452,13 +413,13 @@ TEST(test_buffer_separated_from_tail) {
 int spsc_ring_tests() {
     std::printf("=== SPSCRing unit tests ===\n\n");
 
-    std::printf("--- static / compile-time ---\n");
+    std::printf("--- contract: static / compile-time ---\n");
     RUN(test_static_assert_trivially_copyable);
     RUN(test_lock_free);
     RUN(test_core_initial_state);
     RUN(test_usable_capacity);
 
-    std::printf("\n--- single-threaded functional ---\n");
+    std::printf("\n--- contract: behavior ---\n");
     RUN(test_pop_empty_returns_false);
     RUN(test_push_then_pop);
     RUN(test_fifo_order);
@@ -471,14 +432,19 @@ int spsc_ring_tests() {
     RUN(test_writer_guard_fail_fast);
     RUN(test_reader_guard_fail_fast);
 
-    std::printf("\n--- multi-threaded stress ---\n");
-    RUN(test_spsc_stress_fifo_no_loss);
-    RUN(test_spsc_stress_no_torn_read);
-    RUN(test_spsc_sustained_concurrent);
-
-    std::printf("\n--- cache layout ---\n");
+    std::printf("\n--- implementation ---\n");
     RUN(test_head_tail_on_separate_cache_lines);
     RUN(test_buffer_separated_from_tail);
+
+    std::printf("\n--- diagnostic stress ---\n");
+    if (!stam::tests::should_run_diagnostic_stress()) {
+        std::printf("  (disabled; use --diag-stress or STAM_TEST_DIAG_STRESS=1)\n");
+    }
+    if (stam::tests::should_run_diagnostic_stress()) {
+        RUN(test_spsc_stress_fifo_no_loss);
+        RUN(test_spsc_stress_no_torn_read);
+        RUN(test_spsc_sustained_concurrent);
+    }
 
     std::printf("\n=== Results: %d/%d passed ===\n", g_passed, g_total);
     return (g_failed == 0) ? 0 : 1;

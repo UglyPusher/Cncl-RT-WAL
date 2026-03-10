@@ -44,9 +44,9 @@ override via user_sys_config.hpp for special builds.
 | Macro | Type | Default | Meaning |
 |------|------|---------|---------|
 | `SYS_ASSUME_SINGLE_CORE` | 0/1 | 0 | If 1: single-core assumptions allowed (still may need IRQ barriers). |
-| `SYS_CACHELINE_BYTES` | int | 64 | Cache line size. Set 32/64, or 0 if unknown/no-cache. |
+| `SYS_CACHELINE_BYTES` | int | 64 | Cache line size. Set 32/64; 0 is usable only if your build does not require cacheline-based layout invariants. |
 | `SYS_RB_ALIGNMENT` | int | `SYS_CACHELINE_BYTES` | Alignment for ring/rw-hot structs. |
-| `SYS_HAS_IN_RT_CONTEXT` | 0/1 | 0 | If 1: user supplies `bool sys_in_rt_context() noexcept;`. |
+| `SYS_HAS_IN_RT_CONTEXT` | 0/1 | 0 | If 1: user supplies `bool sys_platform_in_rt_context() noexcept;` (see `sys_rt.hpp`). |
 
 ### 2.3 Fence mode (optional extension)
 If you add a macro (recommended) to control CPU fences:
@@ -80,7 +80,7 @@ Enable `SYS_ENABLE_CPU_FENCES=1` only if:
 
 ### 4.1 Defaults
 - Desktop/server: `SYS_CACHELINE_BYTES=64`
-- Many Cortex-M: no data cache → you *can* set 0 or keep 32 for padding discipline.
+- Many Cortex-M: no data cache → keep 32 (layout discipline), or set 0 only if your build does not rely on cacheline-based layout invariants.
 - Cortex-A: typically 64.
 
 ### 4.2 Rules of thumb
@@ -93,9 +93,10 @@ Enable `SYS_ENABLE_CPU_FENCES=1` only if:
 
 ## 5. RT boundary hooks
 
-### 5.1 Optional `sys_in_rt_context()`
-If your environment can tell whether you are in an RT/ISR context, implement:
+### 5.1 Optional RT-context hook
+If your environment can tell whether you are in an RT/ISR context, enable
+`SYS_HAS_IN_RT_CONTEXT=1` and implement the platform hook expected by `sys_rt.hpp`:
 
 ```cpp
 // user code
-bool sys_in_rt_context() noexcept;
+bool sys_platform_in_rt_context() noexcept;

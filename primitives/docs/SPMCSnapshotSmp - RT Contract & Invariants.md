@@ -182,6 +182,11 @@ Reader accepts data only if `published` is unchanged between initial load and po
 
 If `try_read(out)` returns `true`, `out` is a consistent snapshot for that invocation.
 
+Implementation note (defensive):
+reader additionally verifies a per-slot sequence counter around the payload copy.
+If a slot is overwritten during the read window (including ABA-style republish),
+`try_read()` returns `false` rather than accepting a torn snapshot.
+
 ### G2. SMP memory visibility
 
 `published.store(release)` after slot write plus reader `published.load(acquire)` provides the required happens-before edge for published slot visibility.

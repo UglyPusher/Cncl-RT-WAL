@@ -132,6 +132,28 @@ struct SPMCSnapshotSmpCore final {
 
     Slot slots[K];
 
+    // ---- Per-slot sequence counters ---------------------------------------
+    //
+    // Defensive torn-read detection (ABA / stale-claim windows):
+    // Even though the busy_mask/refcnt protocol is designed to structurally
+    // prevent writer↔reader overlap, a per-slot seqlock-style counter gives the
+    // reader a definitive way to detect an in-flight overwrite and return false
+    // without ever accepting a torn snapshot.
+    struct alignas(SYS_CACHELINE_BYTES) Seq final {
+        static_assert(sizeof(std::atomic<uint32_t>) <= SYS_CACHELINE_BYTES,
+                      "Seq: atomic wider than cacheline");
+
+        std::atomic<uint32_t> value{0};
+
+    private:
+        std::byte pad_[SYS_CACHELINE_BYTES - sizeof(std::atomic<uint32_t>)];
+    };
+
+    static_assert(sizeof(Seq) == SYS_CACHELINE_BYTES,
+                  "Seq must be exactly one cacheline");
+
+    Seq seq[K]{};
+
     // ---- Control block -----------------------------------------------------
 
     // Isolated on its own cacheline: writer and all readers touch these on
@@ -225,13 +247,19 @@ public:
             (~busy) & ~(busy_mask_word_t{1} << pub) & all_mask;
         const uint8_t j = static_cast<uint8_t>(detail::ctz_mask_smp(candidates));
 
-        // Step 5: write data. j != pub is guaranteed by candidate selection.
+        // Step 5: seqlock begin for slot j (odd => writer in progress).
+        (void)core_.seq[j].value.fetch_add(1u, std::memory_order_release);
+
+        // Step 6: write data. j != pub is guaranteed by candidate selection.
         core_.slots[j].value = value;
 
-        // Step 6: atomically switch publication.
+        // Step 7: seqlock end for slot j (even => stable snapshot).
+        (void)core_.seq[j].value.fetch_add(1u, std::memory_order_release);
+
+        // Step 8: atomically switch publication.
         core_.ctrl.published.store(j, std::memory_order_release);
 
-        // Step 7: signal initialization (idempotent after the first call).
+        // Step 9: signal initialization (idempotent after the first call).
         core_.ctrl.initialized.store(true, std::memory_order_release);
     }
 
@@ -310,9 +338,31 @@ public:
             return false;
         }
 
-        // Step 5: copy data from slot i.
-        // Slot i is stable: writer cannot write here while busy_mask[i] == 1 (I3).
-        out = core_.slots[i].value;
+        // Step 5: seqlock-style verification around the copy.
+        // If the slot is being overwritten (or was overwritten during copy),
+        // we must not accept the snapshot. Single-shot: return false.
+        const uint32_t s1 = core_.seq[i].value.load(std::memory_order_acquire);
+        if ((s1 & 1u) != 0u) {
+            // Writer in progress on slot i.
+            if (core_.refcnt[i].fetch_sub(1u, std::memory_order_acq_rel) == 1u) {
+                core_.ctrl.busy_mask.fetch_and(~(busy_mask_word_t{1} << i),
+                                               std::memory_order_release);
+            }
+            return false;
+        }
+
+        T tmp = core_.slots[i].value;
+
+        const uint32_t s2 = core_.seq[i].value.load(std::memory_order_acquire);
+        if (s2 != s1) {
+            if (core_.refcnt[i].fetch_sub(1u, std::memory_order_acq_rel) == 1u) {
+                core_.ctrl.busy_mask.fetch_and(~(busy_mask_word_t{1} << i),
+                                               std::memory_order_release);
+            }
+            return false;
+        }
+
+        out = tmp;
 
         // Step 6: release claim. ORDER CRITICAL: refcnt before busy_mask (I5).
         // Only the last reader (fetch_sub returns 1) clears the busy_mask bit.

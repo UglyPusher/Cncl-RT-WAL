@@ -17,7 +17,7 @@
  */
 
 #include "stam/primitives/dbl_buffer.hpp"
-#include "test_filter.hpp"
+#include "test_harness.hpp"
 
 #include <atomic>
 #include <cassert>
@@ -41,31 +41,7 @@ static int g_passed = 0;
 static constexpr const char* kSuiteName = "dbl_buffer";
 static int g_failed = 0;
 
-#define TEST(name) static void name(); static void name##_announce() { std::printf("[RUN] %s\n", #name); } static void name()
-
-#define RUN(name)                                          \
-    do {                                                   \
-        if (!stam::tests::should_run_test(kSuiteName, #name)) {\
-            std::printf("  %-55sSKIP\n", #name " ");\
-            break;\
-        }\
-        ++g_total;                                         \
-        std::printf("  %-55s", #name " ");                 \
-        name##_announce();                                 \
-        name();                                            \
-        ++g_passed;                                        \
-        std::printf("PASS\n");                             \
-    } while (0)
-
-#define EXPECT(cond)                                               \
-    do {                                                           \
-        if (!(cond)) {                                             \
-            ++g_failed;                                            \
-            std::printf("FAIL\n  assertion failed: %s\n"          \
-                        "  at %s:%d\n", #cond, __FILE__, __LINE__);\
-            std::abort();                                          \
-        }                                                          \
-    } while (0)
+// TEST/RUN/EXPECT provided by test_harness.hpp
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -84,21 +60,7 @@ struct LargePod {
     }
 };
 
-template <class Fn>
-bool expect_child_abort(Fn&& fn) {
-    const pid_t pid = ::fork();
-    EXPECT(pid >= 0);
-
-    if (pid == 0) {
-        fn();
-        std::fflush(stdout);
-        _Exit(0);
-    }
-
-    int status = 0;
-    EXPECT(::waitpid(pid, &status, 0) == pid);
-    return WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
-}
+// expect_child_abort provided by test_harness.hpp
 
 // ---------------------------------------------------------------------------
 // Contract tests: static / compile-time checks
@@ -244,18 +206,16 @@ TEST(test_slot_alternates) {
 }
 
 TEST(test_writer_guard_fail_fast) {
-    const bool aborted = expect_child_abort([] {
-        DoubleBuffer<Pod32> db;
-        (void)db.writer();
+    DoubleBuffer<Pod32> db;
+    const bool aborted = stam::tests::expect_double_issue_abort([&] {
         (void)db.writer();
     });
     EXPECT(aborted);
 }
 
 TEST(test_reader_guard_fail_fast) {
-    const bool aborted = expect_child_abort([] {
-        DoubleBuffer<Pod32> db;
-        (void)db.reader();
+    DoubleBuffer<Pod32> db;
+    const bool aborted = stam::tests::expect_double_issue_abort([&] {
         (void)db.reader();
     });
     EXPECT(aborted);

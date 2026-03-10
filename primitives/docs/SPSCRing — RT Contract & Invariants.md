@@ -113,6 +113,8 @@ One slot is always reserved to distinguish **empty/full**.
 * `writer()` may be issued at most once per ring lifetime.
 * `reader()` may be issued at most once per ring lifetime.
 * Exceeding either limit triggers fail-fast (`assert` + `abort`).
+* Issuance guards are atomic/CAS-based to keep fail-fast race-safe
+  even if init code is accidentally run concurrently.
 
 ---
 
