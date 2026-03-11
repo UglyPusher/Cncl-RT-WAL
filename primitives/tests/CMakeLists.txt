@@ -37,6 +37,10 @@ target_compile_features(stam_tests
         cxx_std_20
 )
 
+target_compile_definitions(stam_tests
+    PRIVATE
+        STAM_TEST
+)
 
 # --------------------------------------------------
 # CTest registration
@@ -68,6 +72,7 @@ function(add_stam_suite_test target_name source_file suite_fn)
     target_compile_definitions(${target_name}
         PRIVATE
             STAM_SUITE_FN=${suite_fn}
+            STAM_TEST
     )
 
     add_test(

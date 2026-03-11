@@ -31,6 +31,26 @@
 
 using namespace stam::primitives;
 
+namespace stam::primitives {
+
+template <typename T>
+class DoubleBufferCoreTest final {
+public:
+    static uint32_t published_value(const DoubleBufferCore<T>& core) noexcept {
+        return core.published.load(std::memory_order_relaxed);
+    }
+
+    static const char* slot_value_addr(const DoubleBufferCore<T>& core, uint32_t slot) noexcept {
+        return reinterpret_cast<const char*>(&core.buffers[slot].value);
+    }
+
+    static const char* published_addr(const DoubleBufferCore<T>& core) noexcept {
+        return reinterpret_cast<const char*>(&core.published);
+    }
+};
+
+} // namespace stam::primitives
+
 // ---------------------------------------------------------------------------
 // Minimal test harness (same conventions as mailbox2slot_test.cpp)
 // ---------------------------------------------------------------------------
@@ -79,7 +99,7 @@ TEST(test_lock_free) {
 TEST(test_core_initial_state) {
     // published starts at 0 (slot 0).
     DoubleBuffer<Pod32> db;
-    EXPECT(db.core().published.load() == 0u);
+    EXPECT(DoubleBufferCoreTest<Pod32>::published_value(db.core()) == 0u);
 }
 
 // ---------------------------------------------------------------------------
@@ -196,13 +216,13 @@ TEST(test_slot_alternates) {
     DoubleBuffer<Pod32> db;
     auto writer = db.writer();
 
-    EXPECT(db.core().published.load() == 0u);
+    EXPECT(DoubleBufferCoreTest<Pod32>::published_value(db.core()) == 0u);
     writer.write({1, 1});
-    EXPECT(db.core().published.load() == 1u);
+    EXPECT(DoubleBufferCoreTest<Pod32>::published_value(db.core()) == 1u);
     writer.write({2, 2});
-    EXPECT(db.core().published.load() == 0u);
+    EXPECT(DoubleBufferCoreTest<Pod32>::published_value(db.core()) == 0u);
     writer.write({3, 3});
-    EXPECT(db.core().published.load() == 1u);
+    EXPECT(DoubleBufferCoreTest<Pod32>::published_value(db.core()) == 1u);
 }
 
 TEST(test_writer_guard_fail_fast) {
@@ -362,8 +382,8 @@ TEST(test_spsc_sustained_concurrent) {
 TEST(test_slots_on_separate_cache_lines) {
     // Each slot must be on its own cache line (false sharing avoidance).
     DoubleBuffer<Pod32> db;
-    const auto* s0 = reinterpret_cast<const char*>(&db.core().buffers[0].value);
-    const auto* s1 = reinterpret_cast<const char*>(&db.core().buffers[1].value);
+    const auto* s0 = DoubleBufferCoreTest<Pod32>::slot_value_addr(db.core(), 0u);
+    const auto* s1 = DoubleBufferCoreTest<Pod32>::slot_value_addr(db.core(), 1u);
     const auto  diff = static_cast<ptrdiff_t>(s1 - s0);
     EXPECT(std::abs(diff) >= static_cast<ptrdiff_t>(SYS_CACHELINE_BYTES));
 }
@@ -371,8 +391,8 @@ TEST(test_slots_on_separate_cache_lines) {
 TEST(test_published_on_separate_cache_line_from_slots) {
     // published index must not share a cache line with slot data.
     DoubleBuffer<Pod32> db;
-    const auto* pub  = reinterpret_cast<const char*>(&db.core().published);
-    const auto* s0   = reinterpret_cast<const char*>(&db.core().buffers[0].value);
+    const auto* pub  = DoubleBufferCoreTest<Pod32>::published_addr(db.core());
+    const auto* s0   = DoubleBufferCoreTest<Pod32>::slot_value_addr(db.core(), 0u);
     const auto  diff = static_cast<ptrdiff_t>(pub - s0);
     EXPECT(std::abs(diff) >= static_cast<ptrdiff_t>(SYS_CACHELINE_BYTES));
 }

@@ -18,13 +18,13 @@ Designed for:
 
 ---
 
-## 0.1 UP Init Contract
+## 0.1 Bootstrap (Single-Thread) Init Contract
 
-Initialization and wiring are defined as **UP init**:
+Initialization and wiring are defined as a **single-thread bootstrap phase**:
 
 - all `writer()` / `reader()` issuance and bind steps are executed in a single-thread bootstrap phase;
 - scheduler is not running yet;
-- parallel/multi-core init for the same primitive instance is not allowed.
+- concurrent / multi-core init (racing `writer()` / `reader()` issuance for the same instance) is **out of contract** (unspecified behavior for the system design; may fail-fast).
 
 Handle issuance guards in code rely on this contract.
 
@@ -96,15 +96,16 @@ The size of `T` is fixed and known at compile time.
 
 Violating these preconditions results in **undefined behavior**.
 
-### 4.1 Preemption / SMP Safety
+### 4.1 Preemption / SMP Safety (Important)
 
-This component does **not** guarantee torn-free snapshots in general SMP or preemptive systems.
+This component does **not** guarantee torn-free snapshots under arbitrary overlap in preemptive systems — even on a single CPU.
+On SMP it is also **not safe in general** unless the system can guarantee non-overlap (or provides stronger exclusion).
 
 **Mechanism of failure.** The consumer executes `read()` in two steps: (1) load `published` index, (2) copy `buffers[idx]`. If the consumer is preempted between these two steps and the producer completes **two** `write()` calls during that window, the producer recycles the slot the consumer is about to copy — slot ownership is violated and the consumer may observe torn data. This execution is outside the contract and is undefined behavior.
 
 This scenario requires no SMP: it reproduces on a single CPU under a preemptive scheduler.
 
-**No-torn guarantee holds when** `read()` and `write()` are guaranteed not to overlap in time across their full execution, including the copy of `T`. Sufficient conditions (any one of):
+**No-torn guarantee holds only when** `read()` and `write()` are guaranteed not to overlap in time across their full execution, including the copy of `T`. Sufficient conditions (any one of):
 
 - Scheduling policy ensures the consumer is never preempted for longer than one write period.
 - Application-level rate contract: producer fires at most once per consumer activation.

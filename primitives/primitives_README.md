@@ -15,6 +15,9 @@ Snapshot API unification (v1):
 - generic snapshot concepts: `SnapshotWriter<W, T>`, `SnapshotReader<R, T>`
   in `include/stam/primitives/snapshot_concepts.hpp`.
 
+Memory footprint (RAM/Flash estimation):
+- [`docs/Memory Footprint — Primitives.md`](docs/Memory%20Footprint%20—%20Primitives.md)
+
 ---
 
 ## Components
