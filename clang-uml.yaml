@@ -1,0 +1,18 @@
+# clang-uml configuration for STAM primitives
+compilation_database_dir: /build
+output_directory: docs/diagrams
+
+diagrams:
+  primitives_class:
+    type: class
+    # Limit scope to primitives headers to keep the diagram focused
+    glob:
+    #- primitives/include/**.hpp
+      - /src/primitives/tests/**.cpp
+    include:
+      namespaces:
+        - stam::primitives
+    exclude:
+      namespaces:
+        - std
+        - __gnu_cxx

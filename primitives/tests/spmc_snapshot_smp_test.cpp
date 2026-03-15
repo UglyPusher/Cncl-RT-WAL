@@ -21,6 +21,28 @@
 
 using namespace stam::primitives;
 
+namespace stam::primitives {
+
+template <typename T, uint32_t N> class SPMCSnapshotSmpTest final {
+public:
+    using Core = SPMCSnapshotSmpCore<T, N>;
+    using busy_mask_word_t = typename Core::busy_mask_word_t;
+
+    static busy_mask_word_t busy_mask(const Core& core) noexcept {
+        return core.ctrl.busy_mask.load(std::memory_order_relaxed);
+    }
+
+    static uint8_t refcnt_value(const Core& core, uint32_t i) noexcept {
+        return core.refcnt[i].load(std::memory_order_relaxed);
+    }
+
+    static constexpr uint32_t k_slots() noexcept {
+        return Core::K;
+    }
+};
+
+} // namespace stam::primitives
+
 static int g_total  = 0;
 static int g_passed = 0;
 
@@ -80,9 +102,9 @@ TEST(test_refcnt_and_busy_mask_cleanup) {
     EXPECT(r0.try_read(a));
     EXPECT(r1.try_read(b));
 
-    EXPECT(ch.core().ctrl.busy_mask.load(std::memory_order_acquire) == 0u);
-    for (uint32_t i = 0; i < ch.core().K; ++i) {
-        EXPECT(ch.core().refcnt[i].load(std::memory_order_acquire) == 0u);
+    EXPECT(SPMCSnapshotSmpTest<Pod32, 2>::busy_mask(ch.core()) == 0u);
+    for (uint32_t i = 0; i < SPMCSnapshotSmpTest<Pod32, 2>::k_slots(); ++i) {
+        EXPECT(SPMCSnapshotSmpTest<Pod32, 2>::refcnt_value(ch.core(), i) == 0u);
     }
 }
 
@@ -218,9 +240,9 @@ TEST(test_stress_sustained_cleanup) {
     std::printf("    torn/read: %d/%d (%.6f)\n", torn_count, read_count, torn_per_read);
     EXPECT(read_count > 0);
     EXPECT(torn_count == 0);
-    EXPECT(ch.core().ctrl.busy_mask.load(std::memory_order_acquire) == 0u);
-    for (uint32_t i = 0; i < ch.core().K; ++i) {
-        EXPECT(ch.core().refcnt[i].load(std::memory_order_acquire) == 0u);
+    EXPECT(SPMCSnapshotSmpTest<Pod32, 4>::busy_mask(ch.core()) == 0u);
+    for (uint32_t i = 0; i < SPMCSnapshotSmpTest<Pod32, 4>::k_slots(); ++i) {
+        EXPECT(SPMCSnapshotSmpTest<Pod32, 4>::refcnt_value(ch.core(), i) == 0u);
     }
 }
 
