@@ -182,6 +182,11 @@ Reader accepts data only if `published` is unchanged between initial load and po
 
 If `try_read(out)` returns `true`, `out` is a consistent snapshot for that invocation.
 
+Implementation note (defensive):
+reader additionally verifies a per-slot sequence counter around the payload copy.
+If a slot is overwritten during the read window (including ABA-style republish),
+`try_read()` returns `false` rather than accepting a torn snapshot.
+
 ### G2. SMP memory visibility
 
 `published.store(release)` after slot write plus reader `published.load(acquire)` provides the required happens-before edge for published slot visibility.
@@ -208,6 +213,11 @@ The primitive is a state channel, not an event queue.
 
 No internal retries are performed.
 
+### Test Coverage Note
+
+The `i2 != i` branch is currently covered by probabilistic diagnostic stress, not by a deterministic forced-interleaving unit test.
+Reference: `primitives/tests/spmc_snapshot_smp_test.cpp`, `test_stress_single_shot_miss_rate`.
+
 ---
 
 ## Type And Compile-time Requirements
@@ -217,7 +227,7 @@ No internal retries are performed.
 * `K <= signal_mask_width` (`busy_mask` is `signal_mask_t`, so `N <= signal_mask_width - 2`)
 * `N <= 254` (`refcnt` is `uint8_t`)
 * `std::is_trivially_copyable<T>::value == true`
-* `std::atomic<uint32_t>::is_always_lock_free == true`
+* `std::atomic<signal_mask_t>::is_always_lock_free == true` (busy_mask word)
 * `std::atomic<uint8_t>::is_always_lock_free == true`
 * `std::atomic<bool>::is_always_lock_free == true`
 * `SYS_CACHELINE_BYTES > 0`

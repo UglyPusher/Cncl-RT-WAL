@@ -25,6 +25,18 @@ Handle issuance guards in code rely on this contract.
 
 ---
 
+## Portability Profiles
+
+This contract defines two deployment profiles:
+
+* `strict` profile: requires strict ISO C++ memory-model compliance (payload access must be race-free by C++ definition).
+* `platform-optimized` profile: allows the classic per-slot-seq protocol used here, where overlapping payload copies may occur but are rejected by sequence re-verify.
+
+Current implementation targets `platform-optimized` profile and this is the product default.
+`strict` profile is documented as a portability target but is not implemented in this class.
+
+---
+
 ## Model
 
 ### Participants
@@ -119,6 +131,7 @@ observes a consistent snapshot.
 ### G1. Snapshot consistency
 
 If `try_read(out)` returns `true`, `out` is a consistent snapshot for this invocation.
+This guarantee is protocol-level; strict ISO C++ race-free semantics require `strict` profile implementation.
 
 ### G2. Failure semantics
 

@@ -18,13 +18,13 @@ Designed for:
 
 ---
 
-## 0.1 UP Init Contract
+## 0.1 Bootstrap (Single-Thread) Init Contract
 
-Initialization and wiring are defined as **UP init**:
+Initialization and wiring are defined as a **single-thread bootstrap phase**:
 
 - all `writer()` / `reader()` issuance and bind steps are executed in a single-thread bootstrap phase;
 - scheduler is not running yet;
-- parallel/multi-core init for the same primitive instance is not allowed.
+- concurrent / multi-core init (racing `writer()` / `reader()` issuance for the same instance) is **out of contract** (unspecified behavior for the system design; may fail-fast).
 
 Handle issuance guards in code rely on this contract.
 
@@ -83,7 +83,7 @@ The size of `T` is fixed and known at compile time.
 
 **Atomic publication** — publishing a new state is a single `atomic store(release)`.
 
-**No partial visibility** — the consumer never observes a partially written `T`, provided `read()` and `write()` do not overlap in time (see Section 4.1). If overlap occurs, the slot ownership invariant may be violated and a torn read of `T` is possible.
+**No partial visibility** — the consumer never observes a partially written `T`, provided `read()` and `write()` do not overlap in time (see Section 4.1). If overlap occurs, the slot ownership invariant may be violated; in C++ terms this is outside the valid contract and must be treated as **undefined behavior**. Torn reads are a typical observable symptom, not a bounded degradation guarantee.
 
 ---
 
@@ -96,22 +96,23 @@ The size of `T` is fixed and known at compile time.
 
 Violating these preconditions results in **undefined behavior**.
 
-### 4.1 Preemption / SMP Safety
+### 4.1 Preemption / SMP Safety (Important)
 
-This component does **not** guarantee torn-free snapshots in general SMP or preemptive systems.
+This component does **not** guarantee torn-free snapshots under arbitrary overlap in preemptive systems — even on a single CPU.
+On SMP it is also **not safe in general** unless the system can guarantee non-overlap (or provides stronger exclusion).
 
-**Mechanism of failure.** The consumer executes `read()` in two steps: (1) load `published` index, (2) copy `buffers[idx]`. If the consumer is preempted between these two steps and the producer completes **two** `write()` calls during that window, the producer recycles the slot the consumer is about to copy — slot ownership is violated and the consumer observes a torn `T`.
+**Mechanism of failure.** The consumer executes `read()` in two steps: (1) load `published` index, (2) copy `buffers[idx]`. If the consumer is preempted between these two steps and the producer completes **two** `write()` calls during that window, the producer recycles the slot the consumer is about to copy — slot ownership is violated and the consumer may observe torn data. This execution is outside the contract and is undefined behavior.
 
 This scenario requires no SMP: it reproduces on a single CPU under a preemptive scheduler.
 
-**No-torn guarantee holds when** `read()` and `write()` are guaranteed not to overlap in time across their full execution, including the copy of `T`. Sufficient conditions (any one of):
+**No-torn guarantee holds only when** `read()` and `write()` are guaranteed not to overlap in time across their full execution, including the copy of `T`. Sufficient conditions (any one of):
 
 - Scheduling policy ensures the consumer is never preempted for longer than one write period.
 - Application-level rate contract: producer fires at most once per consumer activation.
 - Consumer runs in a non-preemptible region (e.g., IRQ context with masking).
 - Explicit IRQ masking around `read()`.
 
-**The caller is responsible** for establishing one of the above conditions. The component provides no runtime enforcement.
+**The caller is responsible** for establishing one of the above conditions. The component provides no runtime enforcement. If these conditions are not met, behavior is undefined with respect to snapshot integrity.
 
 ---
 
@@ -227,6 +228,14 @@ Use only when:
 - The system guarantees non-overlapping `read()` / `write()` execution (see Section 4.1).
 - The RT path must be as short as possible.
 
+**Engineering note.**
+`DoubleBuffer` is intentionally a minimal ping-pong snapshot primitive. In practice it is most useful either:
+
+- as a teaching/reference primitive that makes the overlap assumptions explicit; or
+- in production systems where non-overlap is already guaranteed externally by scheduling, activation phasing, IRQ masking, or a strict rate contract.
+
+If the system instead requires the primitive itself to detect or reject torn reads under arbitrary overlap, that requires an additional consistency protocol (for example a sequence/validation scheme). Such a design is no longer this `DoubleBuffer` contract: it moves the component into a different class of primitive and consumes part of the latency/throughput advantage that makes `DoubleBuffer` attractive in the first place.
+
 **Typical applications:**
 
 - Current setpoints
@@ -252,4 +261,4 @@ Use only when:
 
 `DoubleBuffer<T>` is a minimal RT primitive for state transfer. It provides wait-free publication and bounded-time reads, but **does not internally enforce torn-free snapshots** under preemption or SMP. Integrity of reads depends on a system-level guarantee that `read()` and `write()` do not overlap in time (Section 4.1).
 
-It is not a queue and is not intended for logging.
+It is not a queue and is not intended for logging. If internal consistency checking is required under arbitrary overlap, a different primitive should be used rather than extending `DoubleBuffer` until it loses its defining simplicity.

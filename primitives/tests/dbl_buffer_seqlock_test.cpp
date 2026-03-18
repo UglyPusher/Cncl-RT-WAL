@@ -8,6 +8,7 @@
  */
 
 #include "stam/primitives/dbl_buffer_seqlock.hpp"
+#include "test_harness.hpp"
 #include "stam/primitives/snapshot_concepts.hpp"
 #include "stam/sys/sys_align.hpp"
 
@@ -23,6 +24,24 @@
 
 using namespace stam::primitives;
 
+namespace stam::primitives {
+
+template <typename T> class DoubleBufferSeqLockTest final {
+public:
+    static uint32_t ctrl_seq_value(const DoubleBufferSeqLockCore<T>& core) noexcept {
+        return core.ctrl.seq.load(std::memory_order_relaxed);
+    }
+
+    static const char* ctrl_addr(const DoubleBufferSeqLockCore<T>& core) noexcept {
+        return reinterpret_cast<const char*>(&core.ctrl);
+    }
+
+    static const char* slot_addr(const DoubleBufferSeqLockCore<T>& core) noexcept {
+        return reinterpret_cast<const char*>(&core.slot);
+    }
+};
+
+} // namespace stam::primitives
 // ---------------------------------------------------------------------------
 // Minimal test harness (file-local counters)
 // ---------------------------------------------------------------------------
@@ -30,25 +49,10 @@ using namespace stam::primitives;
 static int g_total  = 0;
 static int g_passed = 0;
 
-#define TEST(name) static void name()
+static constexpr const char* kSuiteName = "dbl_buffer_seqlock";
+static int g_failed = 0;
 
-#define RUN(name)                                            \
-    do {                                                     \
-        ++g_total;                                           \
-        std::printf("  %-55s", #name " ");                   \
-        name();                                              \
-        ++g_passed;                                          \
-        std::printf("PASS\n");                               \
-    } while (0)
-
-#define EXPECT(cond)                                                   \
-    do {                                                               \
-        if (!(cond)) {                                                 \
-            std::printf("FAIL\n  assertion failed: %s\n"              \
-                        "  at %s:%d\n", #cond, __FILE__, __LINE__);   \
-            std::abort();                                              \
-        }                                                              \
-    } while (0)
+// TEST/RUN/EXPECT provided by test_harness.hpp
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -67,24 +71,10 @@ struct LargePod {
     }
 };
 
-template <class Fn>
-bool expect_child_abort(Fn&& fn) {
-    const pid_t pid = ::fork();
-    EXPECT(pid >= 0);
-
-    if (pid == 0) {
-        fn();
-        std::fflush(stdout);
-        _Exit(0);
-    }
-
-    int status = 0;
-    EXPECT(::waitpid(pid, &status, 0) == pid);
-    return WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
-}
+// expect_child_abort provided by test_harness.hpp
 
 // ---------------------------------------------------------------------------
-// Static / compile-time checks
+// Contract tests: static / compile-time checks
 // ---------------------------------------------------------------------------
 
 TEST(test_static_trivially_copyable) {
@@ -121,14 +111,8 @@ TEST(test_try_read_before_write_returns_true) {
     EXPECT(reader.try_read(out) == true);
 }
 
-TEST(test_seq_initial_value) {
-    // seq starts at 0 (even = quiescent).
-    DoubleBufferSeqLock<Pod32> ch;
-    EXPECT(ch.core().ctrl.seq.load(std::memory_order_relaxed) == 0u);
-}
-
 // ---------------------------------------------------------------------------
-// Single-threaded functional tests
+// Contract tests: behavior
 // ---------------------------------------------------------------------------
 
 TEST(test_write_then_read) {
@@ -175,7 +159,7 @@ TEST(test_seq_even_after_write) {
     DoubleBufferSeqLock<Pod32> ch;
     auto writer = ch.writer();
     writer.write({1, 2});
-    EXPECT((ch.core().ctrl.seq.load(std::memory_order_relaxed) & 1u) == 0u);
+    EXPECT((DoubleBufferSeqLockTest<Pod32>::ctrl_seq_value(ch.core()) & 1u) == 0u);
 }
 
 TEST(test_multiple_reads_return_latest) {
@@ -221,51 +205,59 @@ TEST(test_write_alias) {
 }
 
 TEST(test_writer_guard_fail_fast) {
-    const bool aborted = expect_child_abort([] {
-        DoubleBufferSeqLock<Pod32> ch;
-        (void)ch.writer();
+    DoubleBufferSeqLock<Pod32> ch;
+    const bool aborted = stam::tests::expect_double_issue_abort([&] {
         (void)ch.writer();
     });
     EXPECT(aborted);
 }
 
 TEST(test_reader_guard_fail_fast) {
-    const bool aborted = expect_child_abort([] {
-        DoubleBufferSeqLock<Pod32> ch;
-        (void)ch.reader();
+    DoubleBufferSeqLock<Pod32> ch;
+    const bool aborted = stam::tests::expect_double_issue_abort([&] {
         (void)ch.reader();
     });
     EXPECT(aborted);
 }
 
 // ---------------------------------------------------------------------------
-// Cache layout checks
+// Implementation tests
 // ---------------------------------------------------------------------------
+
+TEST(test_seq_initial_value) {
+    // seq starts at 0 (even = quiescent).
+    DoubleBufferSeqLock<Pod32> ch;
+    EXPECT(DoubleBufferSeqLockTest<Pod32>::ctrl_seq_value(ch.core()) == 0u);
+}
 
 TEST(test_seq_cacheline_alignment) {
     DoubleBufferSeqLock<Pod32> ch;
-    const auto addr = reinterpret_cast<uintptr_t>(&ch.core().ctrl);
+    const auto addr = reinterpret_cast<uintptr_t>(
+        DoubleBufferSeqLockTest<Pod32>::ctrl_addr(ch.core()));
     EXPECT(addr % SYS_CACHELINE_BYTES == 0u);
 }
 
 TEST(test_slot_cacheline_alignment) {
     DoubleBufferSeqLock<Pod32> ch;
-    const auto addr = reinterpret_cast<uintptr_t>(&ch.core().slot);
+    const auto addr = reinterpret_cast<uintptr_t>(
+        DoubleBufferSeqLockTest<Pod32>::slot_addr(ch.core()));
     EXPECT(addr % SYS_CACHELINE_BYTES == 0u);
 }
 
 TEST(test_seq_separate_from_slot) {
     // seq and slot must be on separate cachelines.
     DoubleBufferSeqLock<Pod32> ch;
-    const auto seq_addr  = reinterpret_cast<uintptr_t>(&ch.core().ctrl);
-    const auto slot_addr = reinterpret_cast<uintptr_t>(&ch.core().slot);
+    const auto seq_addr  = reinterpret_cast<uintptr_t>(
+        DoubleBufferSeqLockTest<Pod32>::ctrl_addr(ch.core()));
+    const auto slot_addr = reinterpret_cast<uintptr_t>(
+        DoubleBufferSeqLockTest<Pod32>::slot_addr(ch.core()));
     const auto diff = static_cast<ptrdiff_t>(seq_addr) -
                       static_cast<ptrdiff_t>(slot_addr);
     EXPECT(std::abs(diff) >= static_cast<ptrdiff_t>(SYS_CACHELINE_BYTES));
 }
 
 // ---------------------------------------------------------------------------
-// Multi-threaded stress tests
+// Contract tests: multi-threaded behavior
 // ---------------------------------------------------------------------------
 
 // Basic SMP stress: writer and reader on separate threads.
@@ -362,6 +354,10 @@ TEST(test_stress_latest_wins_after_writer_done) {
     EXPECT(out.x == kFrames && out.y == kFrames);
 }
 
+// ---------------------------------------------------------------------------
+// Diagnostic stress tests
+// ---------------------------------------------------------------------------
+
 // Sustained concurrent stress: both threads run for a fixed duration.
 TEST(test_stress_sustained) {
     constexpr auto kDuration = std::chrono::milliseconds(200);
@@ -402,25 +398,24 @@ TEST(test_stress_sustained) {
     EXPECT(torn.load() == 0);
     EXPECT(reads.load() > 0);
     // seq must be even (write closed) after all threads exit.
-    EXPECT((ch.core().ctrl.seq.load() & 1u) == 0u);
+    EXPECT((DoubleBufferSeqLockTest<Pod32>::ctrl_seq_value(ch.core()) & 1u) == 0u);
 }
 
 // ---------------------------------------------------------------------------
 // Entry point (called from main.cpp)
 // ---------------------------------------------------------------------------
 
-void dbl_buffer_seqlock_tests() {
+int dbl_buffer_seqlock_tests() {
     std::printf("=== DoubleBufferSeqLock tests ===\n\n");
 
-    std::printf("--- static / compile-time ---\n");
+    std::printf("--- contract: static / compile-time ---\n");
     RUN(test_static_trivially_copyable);
     RUN(test_lock_free_atomics);
     RUN(test_concepts);
     RUN(test_initial_state_zero);
     RUN(test_try_read_before_write_returns_true);
-    RUN(test_seq_initial_value);
 
-    std::printf("\n--- single-threaded functional ---\n");
+    std::printf("\n--- contract: behavior ---\n");
     RUN(test_write_then_read);
     RUN(test_try_read_after_write);
     RUN(test_latest_wins);
@@ -430,17 +425,23 @@ void dbl_buffer_seqlock_tests() {
     RUN(test_write_alias);
     RUN(test_writer_guard_fail_fast);
     RUN(test_reader_guard_fail_fast);
+    RUN(test_stress_no_torn_read);
+    RUN(test_stress_try_read_no_torn_read);
+    RUN(test_stress_latest_wins_after_writer_done);
 
-    std::printf("\n--- cache layout ---\n");
+    std::printf("\n--- implementation ---\n");
+    RUN(test_seq_initial_value);
     RUN(test_seq_cacheline_alignment);
     RUN(test_slot_cacheline_alignment);
     RUN(test_seq_separate_from_slot);
 
-    std::printf("\n--- multi-threaded stress ---\n");
-    RUN(test_stress_no_torn_read);
-    RUN(test_stress_try_read_no_torn_read);
-    RUN(test_stress_latest_wins_after_writer_done);
-    RUN(test_stress_sustained);
+    std::printf("\n--- diagnostic stress ---\n");
+    if (stam::tests::should_run_diagnostic_stress()) {
+        RUN(test_stress_sustained);
+    } else {
+        std::printf("  diagnostic stress disabled (use --diag-stress or STAM_TEST_DIAG_STRESS=1)\n");
+    }
 
     std::printf("\n  passed: %d / %d\n\n", g_passed, g_total);
+    return 0;
 }

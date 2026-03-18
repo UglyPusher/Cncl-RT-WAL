@@ -9,6 +9,7 @@ This directory contains repository-level documentation.
 - Safety notes: `docs/safety/*`
 - Primitive contracts: `primitives/docs/*`
 - Runtime library contracts: `stam-rt-lib/docs/*`
+- Generated diagrams: `docs/diagrams/*`
 
 ## Concepts Subtree Policy
 

@@ -18,6 +18,7 @@
  */
 
 #include "stam/primitives/crc32_rt.hpp"
+#include "test_harness.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -33,28 +34,11 @@ using namespace stam::primitives;
 
 static int g_total  = 0;
 static int g_passed = 0;
+
+static constexpr const char* kSuiteName = "crc32";
 static int g_failed = 0;
 
-#define TEST(name) static void name()
-
-#define RUN(name)                                          \
-    do {                                                   \
-        ++g_total;                                         \
-        std::printf("  %-60s", #name " ");                 \
-        name();                                            \
-        ++g_passed;                                        \
-        std::printf("PASS\n");                             \
-    } while (0)
-
-#define EXPECT(cond)                                               \
-    do {                                                           \
-        if (!(cond)) {                                             \
-            ++g_failed;                                            \
-            std::printf("FAIL\n  assertion failed: %s\n"          \
-                        "  at %s:%d\n", #cond, __FILE__, __LINE__);\
-            std::abort();                                          \
-        }                                                          \
-    } while (0)
+// TEST/RUN/EXPECT provided by test_harness.hpp
 
 #define EXPECT_EQ(a, b)                                            \
     do {                                                           \

@@ -1,6 +1,6 @@
 # SPMCSnapshot (SPMC Snapshot Channel)
 
-`docs/contracts/SPMCSnapshot — RT Contract & Invariants.md` · Revision 6.3 - March 2026
+`primitives/docs/SPMCSnapshot — RT Contract & Invariants.md` · Revision 6.3 - March 2026
 
 ---
 
@@ -84,7 +84,7 @@ initialized      - atomic<bool>, false before first publication, true after
 | `refcnt[i]` | readers | readers (fetch_sub result) | exact number of concurrent readers |
 | `busy_mask` | readers | writer (acquire) | O(1) conservative busy indicator |
 | `published` | writer (store) | readers, writer (acquire) | current snapshot index |
-| `initialized` | writer (store once) | readers (acquire) | first-publication presence signal |
+| `initialized` | writer (store release, idempotent) | readers (acquire) | first-publication presence signal |
 
 ### `initialized` semantics
 
@@ -318,7 +318,7 @@ std::is_trivially_copyable<T>::value == true
 * `N <= 254` for `refcnt` type `uint8_t`
 * `std::atomic<bool>::is_always_lock_free == true`
 * `std::atomic<uint8_t>::is_always_lock_free == true`
-* `std::atomic<uint32_t>::is_always_lock_free == true`
+* `std::atomic<signal_mask_t>::is_always_lock_free == true` (busy_mask word)
 * `std::is_trivially_copyable<T>::value == true`
 * `kSystemTopologyIsSmp == false` (UP-only build guard)
 

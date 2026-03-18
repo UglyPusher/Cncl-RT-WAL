@@ -36,3 +36,24 @@ endif()
 if(BUILD_APPS)
     add_subdirectory(apps)
 endif()
+
+# ---- Diagrams --------------------------------------------------------------
+
+find_program(CLANG_UML_EXE clang-uml)
+
+if(CLANG_UML_EXE)
+    add_custom_target(diagrams_primitives
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_SOURCE_DIR}/docs/diagrams
+        COMMAND ${CLANG_UML_EXE} -c ${CMAKE_SOURCE_DIR}/clang-uml.yaml -n primitives_class
+        COMMAND ${CMAKE_SOURCE_DIR}/scripts/plantuml_layout.sh
+                ${CMAKE_SOURCE_DIR}/docs/diagrams/primitives_class.puml
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        COMMENT "Generating UML diagrams (primitives)"
+        VERBATIM
+    )
+else()
+    add_custom_target(diagrams_primitives
+        COMMAND ${CMAKE_COMMAND} -E echo
+                "clang-uml not found. Install it and re-run CMake."
+    )
+endif()

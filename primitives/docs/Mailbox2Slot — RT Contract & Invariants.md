@@ -370,6 +370,18 @@ By C++ memory model this is **undefined behavior**.
 
 ---
 
+## Test Policy (Contract vs Diagnostic)
+
+Test suites for `Mailbox2Slot` are separated into three categories:
+
+* **Contract tests** - must pass in CI gate and verify only guarantees explicitly stated in this contract.
+* **Implementation tests** - verify internal/layout decisions and are used as regression checks for the current implementation.
+* **Diagnostic stress tests** - collect observational metrics under heavy overlap (for example `torn/read` rate).
+
+Diagnostic stress tests are **not** contract pass/fail criteria. Their numeric results are scheduler/platform dependent and must not be interpreted as additional API guarantees beyond this document.
+
+---
+
 ## Changelog
 
 | Revision | Date | Changes |
