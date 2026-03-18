@@ -26,6 +26,30 @@
 
 using namespace stam::primitives;
 
+namespace stam::primitives {
+
+template <typename T>
+class Mailbox2SlotTest final {
+public:
+    static uint8_t pub_state_value(const Mailbox2SlotCore<T>& core) noexcept {
+        return core.pub_state.value.load(std::memory_order_relaxed);
+    }
+
+    static uint8_t lock_state_value(const Mailbox2SlotCore<T>& core) noexcept {
+        return core.lock_state.value.load(std::memory_order_relaxed);
+    }
+
+    static const char* pub_state_addr(const Mailbox2SlotCore<T>& core) noexcept {
+        return reinterpret_cast<const char*>(&core.pub_state);
+    }
+
+    static const char* lock_state_addr(const Mailbox2SlotCore<T>& core) noexcept {
+        return reinterpret_cast<const char*>(&core.lock_state);
+    }
+};
+
+} // namespace stam::primitives
+
 // ---------------------------------------------------------------------------
 // Minimal test harness
 // ---------------------------------------------------------------------------
@@ -77,8 +101,8 @@ TEST(test_state_constants) {
 
 TEST(test_core_initial_state) {
     Mailbox2Slot<Pod32> mb;
-    EXPECT(mb.core().pub_state.value.load()  == kNone);
-    EXPECT(mb.core().lock_state.value.load() == kUnlocked);
+    EXPECT(Mailbox2SlotTest<Pod32>::pub_state_value(mb.core()) == kNone);
+    EXPECT(Mailbox2SlotTest<Pod32>::lock_state_value(mb.core()) == kUnlocked);
 }
 
 TEST(test_lock_free) {
@@ -100,7 +124,7 @@ TEST(test_try_read_before_publish_returns_false) {
     // out must be unchanged on false return
     EXPECT(out.x == 42 && out.y == 42);
     // postcondition: lock_state == UNLOCKED
-    EXPECT(mb.core().lock_state.value.load() == kUnlocked);
+    EXPECT(Mailbox2SlotTest<Pod32>::lock_state_value(mb.core()) == kUnlocked);
 }
 
 TEST(test_publish_then_read) {
@@ -115,7 +139,7 @@ TEST(test_publish_then_read) {
 
     EXPECT(ok);
     EXPECT(out.x == 1 && out.y == 2);
-    EXPECT(mb.core().lock_state.value.load() == kUnlocked);
+    EXPECT(Mailbox2SlotTest<Pod32>::lock_state_value(mb.core()) == kUnlocked);
 }
 
 TEST(test_latest_wins) {
@@ -169,7 +193,7 @@ TEST(test_lock_state_unlocked_after_false) {
     Pod32 out{};
     EXPECT(!reader.try_read(out));  // no data
 
-    EXPECT(mb.core().lock_state.value.load() == kUnlocked);
+    EXPECT(Mailbox2SlotTest<Pod32>::lock_state_value(mb.core()) == kUnlocked);
 }
 
 TEST(test_lock_state_unlocked_after_true) {
@@ -181,7 +205,7 @@ TEST(test_lock_state_unlocked_after_true) {
 
     Pod32 out{};
     EXPECT(reader.try_read(out));
-    EXPECT(mb.core().lock_state.value.load() == kUnlocked);
+    EXPECT(Mailbox2SlotTest<Pod32>::lock_state_value(mb.core()) == kUnlocked);
 }
 
 TEST(test_large_pod) {
@@ -301,7 +325,7 @@ TEST(test_spsc_stress_no_torn_read) {
     std::printf("    torn/read: %d/%d (%.6f)\n", torn_count, read_count, torn_per_read);
     EXPECT(read_count > 0);
     EXPECT(torn_count >= 0 && torn_count <= read_count);
-    EXPECT(mb.core().lock_state.value.load() == kUnlocked);
+    EXPECT(Mailbox2SlotTest<Pod32>::lock_state_value(mb.core()) == kUnlocked);
 }
 
 // Sustained concurrent stress: both threads run for a fixed duration.
@@ -351,7 +375,7 @@ TEST(test_spsc_sustained_concurrent) {
     std::printf("    torn/read: %d/%d (%.6f)\n", torn_count, read_count, torn_per_read);
     EXPECT(read_count > 0);
     EXPECT(torn_count >= 0 && torn_count <= read_count);
-    EXPECT(mb.core().lock_state.value.load() == kUnlocked);
+    EXPECT(Mailbox2SlotTest<Pod32>::lock_state_value(mb.core()) == kUnlocked);
 }
 
 // ---------------------------------------------------------------------------
@@ -361,8 +385,8 @@ TEST(test_spsc_sustained_concurrent) {
 TEST(test_cache_line_separation) {
     // pub_state and lock_state must be on different cache lines.
     Mailbox2Slot<Pod32> mb;
-    const auto* ps = reinterpret_cast<const char*>(&mb.core().pub_state);
-    const auto* ls = reinterpret_cast<const char*>(&mb.core().lock_state);
+    const auto* ps = Mailbox2SlotTest<Pod32>::pub_state_addr(mb.core());
+    const auto* ls = Mailbox2SlotTest<Pod32>::lock_state_addr(mb.core());
     const auto  diff = static_cast<ptrdiff_t>(ls - ps);
     EXPECT(std::abs(diff) >= static_cast<ptrdiff_t>(SYS_CACHELINE_BYTES));
 }

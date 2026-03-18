@@ -31,14 +31,43 @@
 
 using namespace stam::primitives;
 
+namespace stam::primitives
+{
+    template <typename T, size_t Capacity>
+    class SPSCRingTest
+    {
+    public:
+        static size_t get_head_value(const SPSCRingCore<T, Capacity> &core_) noexcept
+        {
+            return core_.head_.load();
+        }
+        static size_t get_tail_value(const SPSCRingCore<T, Capacity> &core_) noexcept
+        {
+            return core_.tail_.load();
+        }
+        static const char *get_head_addr(const SPSCRingCore<T, Capacity> &core_) noexcept
+        {
+            return reinterpret_cast<const char *>(&core_.head_);
+        }
+        static const char *get_tail_addr(const SPSCRingCore<T, Capacity> &core_) noexcept
+        {
+            return reinterpret_cast<const char *>(&core_.tail_);
+        }
+        static const char *get_buffer_addr(const SPSCRingCore<T, Capacity> &core_) noexcept
+        {
+            return reinterpret_cast<const char *>(&core_.buffer_[0]);
+        }
+    };
+}
+
 // ---------------------------------------------------------------------------
 // Minimal test harness (same conventions as dbl_buffer_test.cpp)
 // ---------------------------------------------------------------------------
 
-static int g_total  = 0;
+static int g_total = 0;
 static int g_passed = 0;
 
-static constexpr const char* kSuiteName = "spsc_ring";
+static constexpr const char *kSuiteName = "spsc_ring";
 static int g_failed = 0;
 
 // TEST/RUN/EXPECT provided by test_harness.hpp
@@ -47,42 +76,50 @@ static int g_failed = 0;
 // Helpers
 // ---------------------------------------------------------------------------
 
-struct Pod32 {
+struct Pod32
+{
     int32_t x{0};
     int32_t y{0};
-    bool operator==(const Pod32&) const noexcept = default;
+    bool operator==(const Pod32 &) const noexcept = default;
 };
 
-struct LargePod {
+struct LargePod
+{
     uint8_t data[128]{};
-    bool operator==(const LargePod& o) const noexcept {
+    bool operator==(const LargePod &o) const noexcept
+    {
         return std::memcmp(data, o.data, sizeof(data)) == 0;
     }
 };
 
 // expect_child_abort provided by test_harness.hpp
 
-static constexpr size_t kCap = 16;  // power of two, usable = 15
+static constexpr size_t kCap = 16; // power of two, usable = 15
 
 // ---------------------------------------------------------------------------
 // Contract tests: static / compile-time checks
 // ---------------------------------------------------------------------------
 
-TEST(test_static_assert_trivially_copyable) {
+TEST(test_static_assert_trivially_copyable)
+{
     [[maybe_unused]] SPSCRing<Pod32, kCap> ring;
 }
 
-TEST(test_lock_free) {
+TEST(test_lock_free)
+{
     EXPECT(std::atomic<size_t>::is_always_lock_free);
 }
 
-TEST(test_core_initial_state) {
+TEST(test_core_initial_state)
+{
     SPSCRing<Pod32, kCap> ring;
-    EXPECT(ring.core().head_.load() == 0u);
-    EXPECT(ring.core().tail_.load() == 0u);
+    using TestR = SPSCRingTest<Pod32, kCap>;
+    EXPECT(TestR::get_head_value(ring.core()) == 0u);
+    EXPECT(TestR::get_tail_value(ring.core()) == 0u);
 }
 
-TEST(test_usable_capacity) {
+TEST(test_usable_capacity)
+{
     SPSCRing<Pod32, kCap> ring;
     EXPECT(ring.writer().usable_capacity() == kCap - 1);
     EXPECT(ring.reader().usable_capacity() == kCap - 1);
@@ -93,7 +130,8 @@ TEST(test_usable_capacity) {
 // ---------------------------------------------------------------------------
 
 // Semantic difference #1: pop() on empty ring returns false, not zero-init T.
-TEST(test_pop_empty_returns_false) {
+TEST(test_pop_empty_returns_false)
+{
     SPSCRing<Pod32, kCap> ring;
     auto reader = ring.reader();
 
@@ -103,7 +141,8 @@ TEST(test_pop_empty_returns_false) {
     EXPECT(out.x == 99 && out.y == 99);
 }
 
-TEST(test_push_then_pop) {
+TEST(test_push_then_pop)
+{
     SPSCRing<Pod32, kCap> ring;
     auto writer = ring.writer();
     auto reader = ring.reader();
@@ -116,15 +155,18 @@ TEST(test_push_then_pop) {
 }
 
 // Semantic difference #2: FIFO order — items arrive in push order.
-TEST(test_fifo_order) {
+TEST(test_fifo_order)
+{
     SPSCRing<Pod32, kCap> ring;
     auto writer = ring.writer();
     auto reader = ring.reader();
 
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 5; ++i)
+    {
         EXPECT(writer.push({i, i}));
     }
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 5; ++i)
+    {
         Pod32 out{};
         EXPECT(reader.pop(out));
         EXPECT(out.x == i && out.y == i);
@@ -136,12 +178,14 @@ TEST(test_fifo_order) {
 }
 
 // Semantic difference #3: full ring rejects push (no overwrite).
-TEST(test_push_full_returns_false) {
+TEST(test_push_full_returns_false)
+{
     SPSCRing<Pod32, kCap> ring;
     auto writer = ring.writer();
 
     const size_t cap = writer.usable_capacity();
-    for (size_t i = 0; i < cap; ++i) {
+    for (size_t i = 0; i < cap; ++i)
+    {
         EXPECT(writer.push({static_cast<int32_t>(i), 0}));
     }
 
@@ -149,7 +193,8 @@ TEST(test_push_full_returns_false) {
     EXPECT(!writer.push({-1, -1}));
 }
 
-TEST(test_fill_drain_fill_again) {
+TEST(test_fill_drain_fill_again)
+{
     // Ring must be fully reusable after drain — exercises index wrap-around.
     SPSCRing<Pod32, kCap> ring;
     auto writer = ring.writer();
@@ -157,11 +202,14 @@ TEST(test_fill_drain_fill_again) {
 
     const size_t cap = writer.usable_capacity();
 
-    for (int round = 0; round < 3; ++round) {
-        for (size_t i = 0; i < cap; ++i) {
+    for (int round = 0; round < 3; ++round)
+    {
+        for (size_t i = 0; i < cap; ++i)
+        {
             EXPECT(writer.push({static_cast<int32_t>(i), round}));
         }
-        for (size_t i = 0; i < cap; ++i) {
+        for (size_t i = 0; i < cap; ++i)
+        {
             Pod32 out{};
             EXPECT(reader.pop(out));
             EXPECT(out.x == static_cast<int32_t>(i));
@@ -173,7 +221,8 @@ TEST(test_fill_drain_fill_again) {
     }
 }
 
-TEST(test_empty_full_helpers) {
+TEST(test_empty_full_helpers)
+{
     SPSCRing<Pod32, kCap> ring;
     auto writer = ring.writer();
     auto reader = ring.reader();
@@ -182,7 +231,8 @@ TEST(test_empty_full_helpers) {
     EXPECT(!writer.full());
 
     const size_t cap = writer.usable_capacity();
-    for (size_t i = 0; i < cap; ++i) {
+    for (size_t i = 0; i < cap; ++i)
+    {
         EXPECT(writer.push({0, 0}));
     }
 
@@ -195,12 +245,14 @@ TEST(test_empty_full_helpers) {
     EXPECT(!writer.full());
 }
 
-TEST(test_interleaved_push_pop) {
+TEST(test_interleaved_push_pop)
+{
     SPSCRing<Pod32, kCap> ring;
     auto writer = ring.writer();
     auto reader = ring.reader();
 
-    for (int i = 0; i < 50; ++i) {
+    for (int i = 0; i < 50; ++i)
+    {
         EXPECT(writer.push({i, -i}));
         Pod32 out{};
         EXPECT(reader.pop(out));
@@ -209,13 +261,15 @@ TEST(test_interleaved_push_pop) {
     }
 }
 
-TEST(test_large_pod) {
+TEST(test_large_pod)
+{
     SPSCRing<LargePod, 8> ring;
     auto writer = ring.writer();
     auto reader = ring.reader();
 
     LargePod src{};
-    for (int i = 0; i < 128; ++i) src.data[i] = static_cast<uint8_t>(i);
+    for (int i = 0; i < 128; ++i)
+        src.data[i] = static_cast<uint8_t>(i);
 
     EXPECT(writer.push(src));
 
@@ -224,13 +278,15 @@ TEST(test_large_pod) {
     EXPECT(dst == src);
 }
 
-TEST(test_wrap_around) {
+TEST(test_wrap_around)
+{
     // Push/pop past the physical end of the buffer array.
-    SPSCRing<Pod32, 4> ring;  // usable = 3
+    SPSCRing<Pod32, 4> ring; // usable = 3
     auto writer = ring.writer();
     auto reader = ring.reader();
 
-    for (int round = 0; round < 10; ++round) {
+    for (int round = 0; round < 10; ++round)
+    {
         EXPECT(writer.push({round * 10 + 1, 0}));
         EXPECT(writer.push({round * 10 + 2, 0}));
         EXPECT(writer.push({round * 10 + 3, 0}));
@@ -246,19 +302,19 @@ TEST(test_wrap_around) {
     }
 }
 
-TEST(test_writer_guard_fail_fast) {
+TEST(test_writer_guard_fail_fast)
+{
     SPSCRing<Pod32, kCap> ring;
-    const bool aborted = stam::tests::expect_double_issue_abort([&] {
-        (void)ring.writer();
-    });
+    const bool aborted = stam::tests::expect_double_issue_abort([&]
+                                                                { (void)ring.writer(); });
     EXPECT(aborted);
 }
 
-TEST(test_reader_guard_fail_fast) {
+TEST(test_reader_guard_fail_fast)
+{
     SPSCRing<Pod32, kCap> ring;
-    const bool aborted = stam::tests::expect_double_issue_abort([&] {
-        (void)ring.reader();
-    });
+    const bool aborted = stam::tests::expect_double_issue_abort([&]
+                                                                { (void)ring.reader(); });
     EXPECT(aborted);
 }
 
@@ -267,8 +323,9 @@ TEST(test_reader_guard_fail_fast) {
 // ---------------------------------------------------------------------------
 
 // All pushed items must arrive, in FIFO order, with no loss.
-TEST(test_spsc_stress_fifo_no_loss) {
-    constexpr int    kItems   = 200'000;
+TEST(test_spsc_stress_fifo_no_loss)
+{
+    constexpr int kItems = 200'000;
     constexpr size_t kRingCap = 256;
 
     SPSCRing<int32_t, kRingCap> ring;
@@ -276,16 +333,17 @@ TEST(test_spsc_stress_fifo_no_loss) {
     std::atomic<int> received{0};
     std::atomic<int> order_errors{0};
 
-    std::thread writer_thread([&] {
+    std::thread writer_thread([&]
+                              {
         auto writer = ring.writer();
         int i = 0;
         while (i < kItems) {
             if (writer.push(i)) ++i;
             // spin on full — acceptable in stress test
-        }
-    });
+        } });
 
-    std::thread reader_thread([&] {
+    std::thread reader_thread([&]
+                              {
         auto reader = ring.reader();
         int expected = 0;
         while (expected < kItems) {
@@ -297,8 +355,7 @@ TEST(test_spsc_stress_fifo_no_loss) {
                 ++expected;
             }
         }
-        received.store(expected, std::memory_order_release);
-    });
+        received.store(expected, std::memory_order_release); });
 
     writer_thread.join();
     reader_thread.join();
@@ -308,22 +365,24 @@ TEST(test_spsc_stress_fifo_no_loss) {
 }
 
 // Each item carries (x, -x); torn read shows as x != -y.
-TEST(test_spsc_stress_no_torn_read) {
-    constexpr int    kItems   = 200'000;
+TEST(test_spsc_stress_no_torn_read)
+{
+    constexpr int kItems = 200'000;
     constexpr size_t kRingCap = 256;
 
     SPSCRing<Pod32, kRingCap> ring;
     std::atomic<int> torn{0};
 
-    std::thread writer_thread([&] {
+    std::thread writer_thread([&]
+                              {
         auto writer = ring.writer();
         int i = 1;
         while (i <= kItems) {
             if (writer.push({i, -i})) ++i;
-        }
-    });
+        } });
 
-    std::thread reader_thread([&] {
+    std::thread reader_thread([&]
+                              {
         auto reader = ring.reader();
         int received = 0;
         while (received < kItems) {
@@ -334,8 +393,7 @@ TEST(test_spsc_stress_no_torn_read) {
                 }
                 ++received;
             }
-        }
-    });
+        } });
 
     writer_thread.join();
     reader_thread.join();
@@ -344,25 +402,27 @@ TEST(test_spsc_stress_no_torn_read) {
 }
 
 // Sustained concurrent stress for a fixed duration.
-TEST(test_spsc_sustained_concurrent) {
-    constexpr auto   kDuration = std::chrono::milliseconds(200);
-    constexpr size_t kRingCap  = 256;
+TEST(test_spsc_sustained_concurrent)
+{
+    constexpr auto kDuration = std::chrono::milliseconds(200);
+    constexpr size_t kRingCap = 256;
 
     SPSCRing<Pod32, kRingCap> ring;
 
     std::atomic<bool> stop{false};
-    std::atomic<int>  torn{0};
-    std::atomic<int>  reads{0};
+    std::atomic<int> torn{0};
+    std::atomic<int> reads{0};
 
-    std::thread writer_thread([&] {
+    std::thread writer_thread([&]
+                              {
         auto writer = ring.writer();
         int i = 1;
         while (!stop.load(std::memory_order_relaxed)) {
             if (writer.push({i, -i})) ++i;
-        }
-    });
+        } });
 
-    std::thread reader_thread([&] {
+    std::thread reader_thread([&]
+                              {
         auto reader = ring.reader();
         Pod32 out{};
         while (!stop.load(std::memory_order_relaxed)) {
@@ -372,8 +432,7 @@ TEST(test_spsc_sustained_concurrent) {
                     torn.fetch_add(1, std::memory_order_relaxed);
                 }
             }
-        }
-    });
+        } });
 
     std::this_thread::sleep_for(kDuration);
     stop.store(true, std::memory_order_release);
@@ -389,20 +448,24 @@ TEST(test_spsc_sustained_concurrent) {
 // Implementation tests
 // ---------------------------------------------------------------------------
 
-TEST(test_head_tail_on_separate_cache_lines) {
+TEST(test_head_tail_on_separate_cache_lines)
+{
     SPSCRing<Pod32, kCap> ring;
-    const auto* h    = reinterpret_cast<const char*>(&ring.core().head_);
-    const auto* t    = reinterpret_cast<const char*>(&ring.core().tail_);
-    const auto  diff = static_cast<ptrdiff_t>(t - h);
+    using TestR = SPSCRingTest<Pod32, kCap>;
+    const auto *h = TestR::get_head_addr(ring.core());
+    const auto *t = TestR::get_tail_addr(ring.core());
+    const auto diff = static_cast<ptrdiff_t>(t - h);
     EXPECT(std::abs(diff) >= static_cast<ptrdiff_t>(SYS_CACHELINE_BYTES));
 }
 
-TEST(test_buffer_separated_from_tail) {
+TEST(test_buffer_separated_from_tail)
+{
     // pad_ ensures buffer_[0] is not on the same cache line as tail_.
     SPSCRing<Pod32, kCap> ring;
-    const auto* t    = reinterpret_cast<const char*>(&ring.core().tail_);
-    const auto* buf  = reinterpret_cast<const char*>(&ring.core().buffer_[0]);
-    const auto  diff = static_cast<ptrdiff_t>(buf - t);
+    using TestR = SPSCRingTest<Pod32, kCap>;
+    const auto *t = TestR::get_tail_addr(ring.core());
+    const auto *buf = TestR::get_buffer_addr(ring.core());
+    const auto diff = static_cast<ptrdiff_t>(buf - t);
     EXPECT(std::abs(diff) >= static_cast<ptrdiff_t>(SYS_CACHELINE_BYTES));
 }
 
@@ -410,7 +473,8 @@ TEST(test_buffer_separated_from_tail) {
 // main
 // ---------------------------------------------------------------------------
 
-int spsc_ring_tests() {
+int spsc_ring_tests()
+{
     std::printf("=== SPSCRing unit tests ===\n\n");
 
     std::printf("--- contract: static / compile-time ---\n");
@@ -437,10 +501,12 @@ int spsc_ring_tests() {
     RUN(test_buffer_separated_from_tail);
 
     std::printf("\n--- diagnostic stress ---\n");
-    if (!stam::tests::should_run_diagnostic_stress()) {
+    if (!stam::tests::should_run_diagnostic_stress())
+    {
         std::printf("  (disabled; use --diag-stress or STAM_TEST_DIAG_STRESS=1)\n");
     }
-    if (stam::tests::should_run_diagnostic_stress()) {
+    if (stam::tests::should_run_diagnostic_stress())
+    {
         RUN(test_spsc_stress_fifo_no_loss);
         RUN(test_spsc_stress_no_torn_read);
         RUN(test_spsc_sustained_concurrent);

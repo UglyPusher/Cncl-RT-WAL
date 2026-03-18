@@ -9,9 +9,7 @@
 #include "stam/sys/sys_align.hpp" // SYS_CACHELINE_BYTES, SYS_CACHELINE_ALIGN
 #include "stam/sys/sys_topology.hpp"
 
-namespace stam::primitives
-{
-
+namespace stam::primitives {
     /*
      * DoubleBuffer — ping-pong snapshot buffer (last-writer-wins).
      *
@@ -58,30 +56,20 @@ namespace stam::primitives
      */
 
     // Forward declarations for friend access in DoubleBufferCore.
-    template <typename T>
-    class DoubleBufferWriter;
-    template <typename T>
-    class DoubleBufferReader;
+    template <typename T> class DoubleBufferWriter;
+    template <typename T> class DoubleBufferReader;
 #ifdef STAM_TEST
-    template <typename T>
-    class DoubleBufferCoreTest;
+    template <typename T> class DoubleBufferCoreTest;
 #endif
 
     // ============================================================================
     // Core (shared state carrier)
     // ============================================================================
 
-    template <typename T>
-    class DoubleBufferCore final
-    {
-        static_assert(std::is_trivially_copyable_v<T>,
-                      "DoubleBuffer requires trivially copyable T");
-
-        static_assert(SYS_CACHELINE_BYTES > 0,
-                      "SYS_CACHELINE_BYTES must be defined by portability layer");
-
-        static_assert(std::atomic<uint32_t>::is_always_lock_free,
-                      "DoubleBuffer requires lock-free std::atomic<uint32_t> for deterministic RT behavior.");
+    template <typename T> class DoubleBufferCore final {
+        static_assert(std::is_trivially_copyable_v<T>, "DoubleBuffer requires trivially copyable T");
+        static_assert(SYS_CACHELINE_BYTES > 0, "SYS_CACHELINE_BYTES must be defined by portability layer");
+        static_assert(std::atomic<uint32_t>::is_always_lock_free,"DoubleBuffer requires lock-free std::atomic<uint32_t> for deterministic RT behavior.");
 
         // NOTE (review item #7 - access model):
         // Core is intentionally encapsulated; production code should interact
@@ -90,13 +78,12 @@ namespace stam::primitives
 
         friend class DoubleBufferWriter<T>;
         friend class DoubleBufferReader<T>;
-
 #ifdef STAM_TEST
         friend class DoubleBufferCoreTest<T>;
 #endif
-    private:
-        struct SYS_CACHELINE_ALIGN Slot final
-        {
+
+private:
+        struct SYS_CACHELINE_ALIGN Slot final {
             // Fix for review item #1 (false sharing):
             // Each slot occupies its own cache line to avoid producer/consumer
             // ping-pong when sizeof(T) < cache line size.
@@ -130,21 +117,21 @@ namespace stam::primitives
         // NOTE (review item #5):
         // Out-parameter avoids return-value ABI/copies and keeps the primitive
         // predictable and zero-overhead for RT usage.
-        void read(T &out) const noexcept
-        {
+        void read(T &out) const noexcept {
             const uint32_t idx = published.load(std::memory_order_acquire);
             out = buffers[idx].value;
         }
 
-        void write(const T &v) noexcept
-        {
+        void write(const T &v) noexcept {
             // NOTE (review item #3 - relaxed load):
             // relaxed is sufficient: producer reads published only to choose
             // the inactive slot. Synchronization is established by the
             // release-store below.
             const uint32_t cur = published.load(std::memory_order_relaxed);
             const uint32_t next = cur ^ 1u;
+
             buffers[next].value = v;
+
             published.store(next, std::memory_order_release);
         }
     };
@@ -153,9 +140,7 @@ namespace stam::primitives
     // Producer view
     // ============================================================================
 
-    template <typename T>
-    class DoubleBufferWriter final
-    {
+    template <typename T> class DoubleBufferWriter final {
     public:
         explicit DoubleBufferWriter(DoubleBufferCore<T> &core) noexcept
             : core_(core) {}
@@ -168,8 +153,7 @@ namespace stam::primitives
         DoubleBufferWriter &operator=(DoubleBufferWriter &&) noexcept = default;
 
         // Producer-only: publish a new snapshot.
-        void write(const T &v) noexcept
-        {
+        void write(const T &v) noexcept {
             core_.write(v);
         }
 
@@ -181,9 +165,7 @@ namespace stam::primitives
     // Consumer view
     // ============================================================================
 
-    template <typename T>
-    class DoubleBufferReader final
-    {
+    template <typename T> class DoubleBufferReader final {
     public:
         explicit DoubleBufferReader(const DoubleBufferCore<T> &core) noexcept
             : core_(core) {}
@@ -195,14 +177,12 @@ namespace stam::primitives
         DoubleBufferReader &operator=(DoubleBufferReader &&) noexcept = default;
 
         // Consumer-only: read the last published snapshot.
-        void read(T &out) const noexcept
-        {
+        void read(T &out) const noexcept {
             core_.read(out);
         }
 
         // Unified snapshot API: try_read() always succeeds for DoubleBuffer.
-        [[nodiscard]] bool try_read(T &out) const noexcept
-        {
+        [[nodiscard]] bool try_read(T &out) const noexcept {
             read(out);
             return true;
         }
@@ -215,11 +195,8 @@ namespace stam::primitives
     // Convenience wrapper
     // ============================================================================
 
-    template <typename T>
-    class DoubleBuffer final
-    {
-        static_assert(!stam::sys::kSystemTopologyIsSmp,
-                      "DoubleBuffer is UP-only. In SMP builds use DoubleBufferSeqLock.");
+    template <typename T> class DoubleBuffer final {
+        static_assert(!stam::sys::kSystemTopologyIsSmp, "DoubleBuffer is UP-only. In SMP builds use DoubleBufferSeqLock.");
 
     public:
         static constexpr uint32_t max_readers = 1u;
@@ -229,8 +206,7 @@ namespace stam::primitives
         DoubleBuffer(const DoubleBuffer &) = delete;
         DoubleBuffer &operator=(const DoubleBuffer &) = delete;
 
-        [[nodiscard]] DoubleBufferWriter<T> writer() noexcept
-        {
+        [[nodiscard]] DoubleBufferWriter<T> writer() noexcept {
             bool expected = false;
             if (!issued_writer_.compare_exchange_strong(expected, true,
                                                         std::memory_order_acq_rel,
@@ -242,13 +218,11 @@ namespace stam::primitives
             return DoubleBufferWriter<T>(core_);
         }
 
-        [[nodiscard]] DoubleBufferReader<T> reader() const noexcept
-        {
+        [[nodiscard]] DoubleBufferReader<T> reader() const noexcept {
             bool expected = false;
             if (!issued_reader_.compare_exchange_strong(expected, true,
                                                         std::memory_order_acq_rel,
-                                                        std::memory_order_acquire))
-            {
+                                                        std::memory_order_acquire)) {
                 assert(false && "DoubleBuffer::reader() already issued");
                 std::abort();
             }

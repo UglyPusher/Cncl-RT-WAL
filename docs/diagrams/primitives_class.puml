@@ -1,0 +1,728 @@
+@startuml
+top to bottom direction
+class "stam::primitives::DoubleBufferSeqLockCore<T>" as C_0002817179293530496008
+class C_0002817179293530496008 {
++DoubleBufferSeqLockCore() noexcept = default : void
++DoubleBufferSeqLockCore(const DoubleBufferSeqLockCore<T> &) = deleted : void
+..
++operator=(const DoubleBufferSeqLockCore<T> &) = deleted : DoubleBufferSeqLockCore<T> &
+..
+-read(T & out) noexcept : void
+-write(const T & value) noexcept : void
+__
+-ctrl : stam::primitives::DoubleBufferSeqLockCore::SeqLine
+-slot : stam::primitives::DoubleBufferSeqLockCore::Slot
+}
+class "stam::primitives::DoubleBufferSeqLockCore::SeqLine" as C_0015261936227309846749
+class C_0015261936227309846749 {
+__
++seq : std::atomic<uint32_t>
+}
+class "stam::primitives::DoubleBufferSeqLockCore::Slot" as C_0008604760910988513082
+class C_0008604760910988513082 {
+__
++value : T
+}
+class "stam::primitives::DoubleBufferSeqLockWriter<T>" as C_0008575402290076407665
+class C_0008575402290076407665 {
++DoubleBufferSeqLockWriter(DoubleBufferSeqLockCore<T> & core) noexcept : void
++DoubleBufferSeqLockWriter(const DoubleBufferSeqLockWriter<T> &) = deleted : void
++DoubleBufferSeqLockWriter(DoubleBufferSeqLockWriter<T> &&) noexcept = default : void
+..
++operator=(const DoubleBufferSeqLockWriter<T> &) = deleted : DoubleBufferSeqLockWriter<T> &
++operator=(DoubleBufferSeqLockWriter<T> &&) noexcept = default : DoubleBufferSeqLockWriter<T> &
+..
++write(const T & value) noexcept : void
+__
+-core_ : DoubleBufferSeqLockCore<T> &
+}
+class "stam::primitives::DoubleBufferSeqLockReader<T>" as C_0006182508413659904594
+class C_0006182508413659904594 {
++DoubleBufferSeqLockReader(DoubleBufferSeqLockCore<T> & core) noexcept : void
++DoubleBufferSeqLockReader(const DoubleBufferSeqLockReader<T> &) = deleted : void
++DoubleBufferSeqLockReader(DoubleBufferSeqLockReader<T> &&) noexcept = default : void
+..
++operator=(const DoubleBufferSeqLockReader<T> &) = deleted : DoubleBufferSeqLockReader<T> &
++operator=(DoubleBufferSeqLockReader<T> &&) noexcept = default : DoubleBufferSeqLockReader<T> &
+..
++read(T & out) noexcept : void
++try_read(T & out) noexcept : bool
+__
+-core_ : DoubleBufferSeqLockCore<T> &
+}
+class "stam::primitives::DoubleBufferSeqLock<T>" as C_0001715990290330560999
+class C_0001715990290330560999 {
++DoubleBufferSeqLock() = default : void
++DoubleBufferSeqLock(const DoubleBufferSeqLock<T> &) = deleted : void
+..
++operator=(const DoubleBufferSeqLock<T> &) = deleted : DoubleBufferSeqLock<T> &
+..
++core() noexcept : DoubleBufferSeqLockCore<T> &
++core() const noexcept : const DoubleBufferSeqLockCore<T> &
++reader() noexcept : DoubleBufferSeqLockReader<T>
++writer() noexcept : DoubleBufferSeqLockWriter<T>
+__
+-core_ : DoubleBufferSeqLockCore<T>
+-issued_reader_ : std::atomic<bool>
+-issued_writer_ : std::atomic<bool>
+{static} +max_readers : const uint32_t
+}
+class "stam::primitives::SnapshotWriter<W,T>" as C_0015254815763782796997
+class C_0015254815763782796997 <<concept>> {
+(W w,const T & v)
+..
+{w.write(v)} -> std::same_as<void>
+}
+class "stam::primitives::SnapshotReader<R,T>" as C_0010968543274342279400
+class C_0010968543274342279400 <<concept>> {
+(R r,T & out)
+..
+{r.try_read(out)} -> std::same_as<bool>
+}
+class "stam::primitives::DoubleBufferSeqLockTest<T>" as C_0010089975920967910986
+class C_0010089975920967910986 {
+{static} +ctrl_addr(const DoubleBufferSeqLockCore<T> & core) noexcept : const char *
+{static} +ctrl_seq_value(const DoubleBufferSeqLockCore<T> & core) noexcept : uint32_t
+{static} +slot_addr(const DoubleBufferSeqLockCore<T> & core) noexcept : const char *
+__
+}
+class "stam::primitives::DoubleBufferCore<T>" as C_0006941305036539648566
+class C_0006941305036539648566 {
+-read(T & out) const noexcept : void
+-write(const T & v) noexcept : void
+__
+-buffers : stam::primitives::DoubleBufferCore::Slot[2]
+-published : std::atomic<uint32_t>
+}
+class "stam::primitives::DoubleBufferCore::Slot" as C_0015668292334244147847
+class C_0015668292334244147847 {
+__
++value : T
+}
+class "stam::primitives::DoubleBufferWriter<T>" as C_0003242087125081797353
+class C_0003242087125081797353 {
++DoubleBufferWriter(DoubleBufferCore<T> & core) noexcept : void
++DoubleBufferWriter(const DoubleBufferWriter<T> &) = deleted : void
++DoubleBufferWriter(DoubleBufferWriter<T> &&) noexcept = default : void
+..
++operator=(const DoubleBufferWriter<T> &) = deleted : DoubleBufferWriter<T> &
++operator=(DoubleBufferWriter<T> &&) noexcept = default : DoubleBufferWriter<T> &
+..
++write(const T & v) noexcept : void
+__
+-core_ : DoubleBufferCore<T> &
+}
+class "stam::primitives::DoubleBufferReader<T>" as C_0018259576408047266629
+class C_0018259576408047266629 {
++DoubleBufferReader(const DoubleBufferCore<T> & core) noexcept : void
++DoubleBufferReader(const DoubleBufferReader<T> &) = deleted : void
++DoubleBufferReader(DoubleBufferReader<T> &&) noexcept = default : void
+..
++operator=(const DoubleBufferReader<T> &) = deleted : DoubleBufferReader<T> &
++operator=(DoubleBufferReader<T> &&) noexcept = default : DoubleBufferReader<T> &
+..
++read(T & out) const noexcept : void
++try_read(T & out) const noexcept : bool
+__
+-core_ : const DoubleBufferCore<T> &
+}
+class "stam::primitives::DoubleBuffer<T>" as C_0017526719928828330534
+class C_0017526719928828330534 {
++DoubleBuffer() = default : void
++DoubleBuffer(const DoubleBuffer<T> &) = deleted : void
+..
++operator=(const DoubleBuffer<T> &) = deleted : DoubleBuffer<T> &
+..
++core() noexcept : DoubleBufferCore<T> &
++core() const noexcept : const DoubleBufferCore<T> &
++reader() const noexcept : DoubleBufferReader<T>
++writer() noexcept : DoubleBufferWriter<T>
+__
+-core_ : DoubleBufferCore<T>
+-issued_reader_ : std::atomic<bool>
+-issued_writer_ : std::atomic<bool>
+{static} +max_readers : const uint32_t
+}
+class "stam::primitives::DoubleBufferCoreTest<T>" as C_0005540786595695757110
+class C_0005540786595695757110 {
+{static} +published_addr(const DoubleBufferCore<T> & core) noexcept : const char *
+{static} +published_value(const DoubleBufferCore<T> & core) noexcept : uint32_t
+{static} +slot_value_addr(const DoubleBufferCore<T> & core, uint32_t slot) noexcept : const char *
+__
+}
+class "stam::primitives::Mailbox2SlotSmpCore<T>" as C_0003987304931812434319
+class C_0003987304931812434319 {
++Mailbox2SlotSmpCore() noexcept = default : void
++Mailbox2SlotSmpCore(const Mailbox2SlotSmpCore<T> &) = deleted : void
+..
++operator=(const Mailbox2SlotSmpCore<T> &) = deleted : Mailbox2SlotSmpCore<T> &
+..
+-publish(const T & value) noexcept : void
+-try_read(T & out) noexcept : bool
+__
+-ctrl : stam::primitives::Mailbox2SlotSmpCore::Control
+-seqs : stam::primitives::Mailbox2SlotSmpCore::SeqLine[2]
+-slots : stam::primitives::Mailbox2SlotSmpCore::Slot[2]
+}
+class "stam::primitives::Mailbox2SlotSmpCore::Slot" as C_0016281169489551409945
+class C_0016281169489551409945 {
+__
++value : T
+}
+class "stam::primitives::Mailbox2SlotSmpCore::SeqLine" as C_0017749188605360224892
+class C_0017749188605360224892 {
+__
++seq : std::atomic<uint32_t>
+}
+class "stam::primitives::Mailbox2SlotSmpCore::Control" as C_0004149801921266033076
+class C_0004149801921266033076 {
+__
++has_value : std::atomic<bool>
++published : std::atomic<uint8_t>
+}
+class "stam::primitives::Mailbox2SlotSmpWriter<T>" as C_0001027172266907651731
+class C_0001027172266907651731 {
++Mailbox2SlotSmpWriter(Mailbox2SlotSmpCore<T> & core) noexcept : void
++Mailbox2SlotSmpWriter(const Mailbox2SlotSmpWriter<T> &) = deleted : void
++Mailbox2SlotSmpWriter(Mailbox2SlotSmpWriter<T> &&) noexcept = default : void
+..
++operator=(const Mailbox2SlotSmpWriter<T> &) = deleted : Mailbox2SlotSmpWriter<T> &
++operator=(Mailbox2SlotSmpWriter<T> &&) noexcept = default : Mailbox2SlotSmpWriter<T> &
+..
++write(const T & value) noexcept : void
+__
+-core_ : Mailbox2SlotSmpCore<T> &
+}
+class "stam::primitives::Mailbox2SlotSmpReader<T>" as C_0013092403875595218818
+class C_0013092403875595218818 {
++Mailbox2SlotSmpReader(Mailbox2SlotSmpCore<T> & core) noexcept : void
++Mailbox2SlotSmpReader(const Mailbox2SlotSmpReader<T> &) = deleted : void
++Mailbox2SlotSmpReader(Mailbox2SlotSmpReader<T> &&) noexcept = default : void
+..
++operator=(const Mailbox2SlotSmpReader<T> &) = deleted : Mailbox2SlotSmpReader<T> &
++operator=(Mailbox2SlotSmpReader<T> &&) noexcept = default : Mailbox2SlotSmpReader<T> &
+..
++try_read(T & out) noexcept : bool
+__
+-core_ : Mailbox2SlotSmpCore<T> &
+}
+class "stam::primitives::Mailbox2SlotSmp<T>" as C_0003490760970449199632
+class C_0003490760970449199632 {
++Mailbox2SlotSmp() = default : void
++Mailbox2SlotSmp(const Mailbox2SlotSmp<T> &) = deleted : void
+..
++operator=(const Mailbox2SlotSmp<T> &) = deleted : Mailbox2SlotSmp<T> &
+..
++core() noexcept : Mailbox2SlotSmpCore<T> &
++core() const noexcept : const Mailbox2SlotSmpCore<T> &
++reader() noexcept : Mailbox2SlotSmpReader<T>
++writer() noexcept : Mailbox2SlotSmpWriter<T>
+__
+-core_ : Mailbox2SlotSmpCore<T>
+-issued_reader_ : std::atomic<bool>
+-issued_writer_ : std::atomic<bool>
+{static} +max_readers : const uint32_t
+}
+class "stam::primitives::Mailbox2SlotSmpTest<T>" as C_0000374270276111721947
+class C_0000374270276111721947 {
+{static} +ctrl_has_value(const Mailbox2SlotSmpCore<T> & core) noexcept : bool
+{static} +ctrl_ptr(const Mailbox2SlotSmpCore<T> & core) noexcept : const void *
+{static} +ctrl_published(const Mailbox2SlotSmpCore<T> & core) noexcept : uint8_t
+{static} +seqs_even(const Mailbox2SlotSmpCore<T> & core, uint32_t i) noexcept : bool
+{static} +seqs_ptr(const Mailbox2SlotSmpCore<T> & core, uint32_t i) noexcept : const void *
+{static} +seqs_seq(const Mailbox2SlotSmpCore<T> & core, uint32_t i) noexcept : uint32_t
+{static} +slots_ptr(const Mailbox2SlotSmpCore<T> & core, uint32_t i) noexcept : const void *
+__
+}
+class "stam::primitives::CachelinePadded<A>" as C_0001893142792537317020
+class C_0001893142792537317020 {
+__
+-pad_ : std::byte[]
++value : A
+}
+class "stam::primitives::CachelinePadded<std::atomic<uint8_t>>" as C_0009771022490368662294
+class C_0009771022490368662294 {
+__
+}
+class "stam::primitives::Mailbox2SlotCore<T>" as C_0006171309695918532247
+class C_0006171309695918532247 {
++Mailbox2SlotCore() noexcept : void
+..
+-publish(const T & value) noexcept : void
+-try_read(T & out) noexcept : bool
+__
+-lock_state : CachelinePadded<std::atomic<uint8_t>>
+-pub_state : CachelinePadded<std::atomic<uint8_t>>
+-slots : stam::primitives::Mailbox2SlotCore::Slot[2]
+}
+class "stam::primitives::Mailbox2SlotCore::Slot" as C_0011897378263689174972
+class C_0011897378263689174972 {
+__
++value : T
+}
+class "stam::primitives::Mailbox2SlotWriter<T>" as C_0008974762851989866322
+class C_0008974762851989866322 {
++Mailbox2SlotWriter(Mailbox2SlotCore<T> & core) noexcept : void
++Mailbox2SlotWriter(const Mailbox2SlotWriter<T> &) = deleted : void
++Mailbox2SlotWriter(Mailbox2SlotWriter<T> &&) noexcept = default : void
+..
++operator=(const Mailbox2SlotWriter<T> &) = deleted : Mailbox2SlotWriter<T> &
++operator=(Mailbox2SlotWriter<T> &&) noexcept = default : Mailbox2SlotWriter<T> &
+..
++publish(const T & value) noexcept : void
++write(const T & value) noexcept : void
+__
+-core_ : Mailbox2SlotCore<T> &
+}
+class "stam::primitives::Mailbox2SlotReader<T>" as C_0002723753537810395226
+class C_0002723753537810395226 {
++Mailbox2SlotReader(Mailbox2SlotCore<T> & core) noexcept : void
++Mailbox2SlotReader(const Mailbox2SlotReader<T> &) = deleted : void
++Mailbox2SlotReader(Mailbox2SlotReader<T> &&) noexcept = default : void
+..
++operator=(const Mailbox2SlotReader<T> &) = deleted : Mailbox2SlotReader<T> &
++operator=(Mailbox2SlotReader<T> &&) noexcept = default : Mailbox2SlotReader<T> &
+..
++try_read(T & out) noexcept : bool
+__
+-core_ : Mailbox2SlotCore<T> &
+}
+class "stam::primitives::Mailbox2Slot<T>" as C_0013299579330091153409
+class C_0013299579330091153409 {
++Mailbox2Slot() noexcept : void
++Mailbox2Slot(const Mailbox2Slot<T> &) = deleted : void
+..
++operator=(const Mailbox2Slot<T> &) = deleted : Mailbox2Slot<T> &
+..
++core() noexcept : Mailbox2SlotCore<T> &
++core() const noexcept : const Mailbox2SlotCore<T> &
++reader() noexcept : Mailbox2SlotReader<T>
++writer() noexcept : Mailbox2SlotWriter<T>
+__
+-core_ : Mailbox2SlotCore<T>
+-issued_reader_ : std::atomic<bool>
+-issued_writer_ : std::atomic<bool>
+{static} +max_readers : const uint32_t
+}
+class "stam::primitives::Mailbox2SlotTest<T>" as C_0004105587186998645777
+class C_0004105587186998645777 {
+{static} +lock_state_addr(const Mailbox2SlotCore<T> & core) noexcept : const char *
+{static} +lock_state_value(const Mailbox2SlotCore<T> & core) noexcept : uint8_t
+{static} +pub_state_addr(const Mailbox2SlotCore<T> & core) noexcept : const char *
+{static} +pub_state_value(const Mailbox2SlotCore<T> & core) noexcept : uint8_t
+__
+}
+class "stam::primitives::SPMCSnapshotSmpCore<T,uint32_t N>" as C_0004474115653897775636
+class C_0004474115653897775636 {
++SPMCSnapshotSmpCore() noexcept : void
++SPMCSnapshotSmpCore(const SPMCSnapshotSmpCore<T,N> &) = deleted : void
+..
++operator=(const SPMCSnapshotSmpCore<T,N> &) = deleted : SPMCSnapshotSmpCore<T,N> &
+__
+{static} +K : const uint32_t
+{static} +busy_mask_bits : const uint32_t
++ctrl : stam::primitives::SPMCSnapshotSmpCore::Control
++refcnt : std::atomic<uint8_t>[]
++seq : stam::primitives::SPMCSnapshotSmpCore::Seq[]
++slots : stam::primitives::SPMCSnapshotSmpCore::Slot[]
+}
+class "stam::primitives::SPMCSnapshotSmpCore::Slot" as C_0005966155963287291371
+class C_0005966155963287291371 {
+__
++value : T
+}
+class "stam::primitives::SPMCSnapshotSmpCore::Seq" as C_0016972558723026846068
+class C_0016972558723026846068 {
+__
+-pad_ : std::byte[60]
++value : std::atomic<uint32_t>
+}
+class "stam::primitives::SPMCSnapshotSmpCore::Control" as C_0014597980420030211098
+class C_0014597980420030211098 {
+__
++busy_mask : std::atomic<busy_mask_word_t>
++initialized : std::atomic<bool>
++published : std::atomic<uint8_t>
+}
+class "stam::primitives::SPMCSnapshotSmpCore<T,N>" as C_0012093770979917074333
+class C_0012093770979917074333 {
+__
+}
+class "stam::primitives::SPMCSnapshotSmpWriter<T,uint32_t N>" as C_0004023270455485922038
+class C_0004023270455485922038 {
++SPMCSnapshotSmpWriter(SPMCSnapshotSmpCore<T,N> & core) noexcept : void
++SPMCSnapshotSmpWriter(const SPMCSnapshotSmpWriter<T,N> &) = deleted : void
++SPMCSnapshotSmpWriter(SPMCSnapshotSmpWriter<T,N> &&) noexcept = default : void
+..
++operator=(const SPMCSnapshotSmpWriter<T,N> &) = deleted : SPMCSnapshotSmpWriter<T,N> &
++operator=(SPMCSnapshotSmpWriter<T,N> &&) noexcept = default : SPMCSnapshotSmpWriter<T,N> &
+..
++publish(const T & value) noexcept : void
++write(const T & value) noexcept : void
+__
+{static} +K : const uint32_t
+-core_ : SPMCSnapshotSmpCore<T,N> &
+}
+class "stam::primitives::SPMCSnapshotSmpReader<T,uint32_t N>" as C_0000618810915471914476
+class C_0000618810915471914476 {
++SPMCSnapshotSmpReader(SPMCSnapshotSmpCore<T,N> & core) noexcept : void
++SPMCSnapshotSmpReader(const SPMCSnapshotSmpReader<T,N> &) = deleted : void
++SPMCSnapshotSmpReader(SPMCSnapshotSmpReader<T,N> &&) noexcept = default : void
+..
++operator=(const SPMCSnapshotSmpReader<T,N> &) = deleted : SPMCSnapshotSmpReader<T,N> &
++operator=(SPMCSnapshotSmpReader<T,N> &&) noexcept = default : SPMCSnapshotSmpReader<T,N> &
+..
++try_read(T & out) noexcept : bool
+__
+{static} +K : const uint32_t
+-core_ : SPMCSnapshotSmpCore<T,N> &
+}
+class "stam::primitives::SPMCSnapshotSmpWriter<T,N>" as C_0000283963174701617482
+class C_0000283963174701617482 {
+__
+}
+class "stam::primitives::SPMCSnapshotSmpReader<T,N>" as C_0000315716176141393361
+class C_0000315716176141393361 {
+__
+}
+class "stam::primitives::SPMCSnapshotSmp<T,uint32_t N>" as C_0003163886742890060050
+class C_0003163886742890060050 {
++SPMCSnapshotSmp() = default : void
++SPMCSnapshotSmp(const SPMCSnapshotSmp<T,N> &) = deleted : void
+..
++operator=(const SPMCSnapshotSmp<T,N> &) = deleted : SPMCSnapshotSmp<T,N> &
+..
++core() noexcept : SPMCSnapshotSmpCore<T,N> &
++core() const noexcept : const SPMCSnapshotSmpCore<T,N> &
++reader() noexcept : SPMCSnapshotSmpReader<T,N>
++writer() noexcept : SPMCSnapshotSmpWriter<T,N>
+__
+-core_ : SPMCSnapshotSmpCore<T,N>
+-issued_readers_ : std::atomic<uint32_t>
+-issued_writer_ : std::atomic<bool>
+{static} +max_readers : const uint32_t
+}
+class "stam::primitives::SPMCSnapshotCore<T,uint32_t N>" as C_0012492583561315241336
+class C_0012492583561315241336 {
++SPMCSnapshotCore() noexcept : void
++SPMCSnapshotCore(const SPMCSnapshotCore<T,N> &) = deleted : void
+..
++operator=(const SPMCSnapshotCore<T,N> &) = deleted : SPMCSnapshotCore<T,N> &
+__
+{static} +K : const uint32_t
+{static} +busy_mask_bits : const uint32_t
++ctrl : stam::primitives::SPMCSnapshotCore::Control
++refcnt : std::atomic<uint8_t>[]
++slots : stam::primitives::SPMCSnapshotCore::Slot[]
+}
+class "stam::primitives::SPMCSnapshotCore::Slot" as C_0010427957756692392037
+class C_0010427957756692392037 {
+__
++value : T
+}
+class "stam::primitives::SPMCSnapshotCore::Control" as C_0014704944811527619887
+class C_0014704944811527619887 {
+__
++busy_mask : std::atomic<busy_mask_word_t>
++initialized : std::atomic<bool>
++published : std::atomic<uint8_t>
+}
+class "stam::primitives::SPMCSnapshotCore<T,N>" as C_0017218345687814761228
+class C_0017218345687814761228 {
+__
+}
+class "stam::primitives::SPMCSnapshotWriter<T,uint32_t N>" as C_0003781469958236718355
+class C_0003781469958236718355 {
++SPMCSnapshotWriter(SPMCSnapshotCore<T,N> & core) noexcept : void
++SPMCSnapshotWriter(const SPMCSnapshotWriter<T,N> &) = deleted : void
++SPMCSnapshotWriter(SPMCSnapshotWriter<T,N> &&) noexcept = default : void
+..
++operator=(const SPMCSnapshotWriter<T,N> &) = deleted : SPMCSnapshotWriter<T,N> &
++operator=(SPMCSnapshotWriter<T,N> &&) noexcept = default : SPMCSnapshotWriter<T,N> &
+..
++publish(const T & value) noexcept : void
++write(const T & value) noexcept : void
+__
+{static} +K : const uint32_t
+-core_ : SPMCSnapshotCore<T,N> &
+}
+class "stam::primitives::SPMCSnapshotReader<T,uint32_t N>" as C_0012342986525258823094
+class C_0012342986525258823094 {
++SPMCSnapshotReader(SPMCSnapshotCore<T,N> & core) noexcept : void
++SPMCSnapshotReader(const SPMCSnapshotReader<T,N> &) = deleted : void
++SPMCSnapshotReader(SPMCSnapshotReader<T,N> &&) noexcept = default : void
+..
++operator=(const SPMCSnapshotReader<T,N> &) = deleted : SPMCSnapshotReader<T,N> &
++operator=(SPMCSnapshotReader<T,N> &&) noexcept = default : SPMCSnapshotReader<T,N> &
+..
++try_read(T & out) noexcept : bool
+__
+{static} +K : const uint32_t
+-core_ : SPMCSnapshotCore<T,N> &
+}
+class "stam::primitives::SPMCSnapshotWriter<T,N>" as C_0013100067399644984843
+class C_0013100067399644984843 {
+__
+}
+class "stam::primitives::SPMCSnapshotReader<T,N>" as C_0006682529092032935099
+class C_0006682529092032935099 {
+__
+}
+class "stam::primitives::SPMCSnapshot<T,uint32_t N>" as C_0006254841375853636506
+class C_0006254841375853636506 {
++SPMCSnapshot() = default : void
++SPMCSnapshot(const SPMCSnapshot<T,N> &) = deleted : void
+..
++operator=(const SPMCSnapshot<T,N> &) = deleted : SPMCSnapshot<T,N> &
+..
++core() noexcept : SPMCSnapshotCore<T,N> &
++core() const noexcept : const SPMCSnapshotCore<T,N> &
++reader() noexcept : SPMCSnapshotReader<T,N>
++writer() noexcept : SPMCSnapshotWriter<T,N>
+__
+-core_ : SPMCSnapshotCore<T,N>
+-issued_readers_ : std::atomic<uint32_t>
+-issued_writer_ : std::atomic<bool>
+{static} +max_readers : const uint32_t
+}
+class "stam::primitives::SPSCRingDropOldestCore<T,size_t Capacity>" as C_0006664092178623163442
+class C_0006664092178623163442 {
+__
++buffer_ : T[]
++head_ : std::atomic<size_t>
++pad_ : char[64]
++tail_ : std::atomic<size_t>
+}
+class "stam::primitives::SPSCRingDropOldestCore<T,Capacity>" as C_0006500088531630564590
+class C_0006500088531630564590 {
+__
+}
+class "stam::primitives::SPSCRingDropOldestWriter<T,size_t Capacity>" as C_0005895449271396092491
+class C_0005895449271396092491 {
++SPSCRingDropOldestWriter(SPSCRingDropOldestCore<T,Capacity> & core) noexcept : void
++SPSCRingDropOldestWriter(const SPSCRingDropOldestWriter<T,Capacity> &) = deleted : void
++SPSCRingDropOldestWriter(SPSCRingDropOldestWriter<T,Capacity> &&) noexcept = default : void
+..
++operator=(const SPSCRingDropOldestWriter<T,Capacity> &) = deleted : SPSCRingDropOldestWriter<T,Capacity> &
++operator=(SPSCRingDropOldestWriter<T,Capacity> &&) noexcept = default : SPSCRingDropOldestWriter<T,Capacity> &
+..
++full() const noexcept : bool
++push(const T & item) noexcept : bool
+{static} +usable_capacity() constexpr noexcept : size_t
+__
+-core_ : SPSCRingDropOldestCore<T,Capacity> &
+}
+class "stam::primitives::SPSCRingDropOldestReader<T,size_t Capacity>" as C_0007354959876587972098
+class C_0007354959876587972098 {
++SPSCRingDropOldestReader(SPSCRingDropOldestCore<T,Capacity> & core) noexcept : void
++SPSCRingDropOldestReader(const SPSCRingDropOldestReader<T,Capacity> &) = deleted : void
++SPSCRingDropOldestReader(SPSCRingDropOldestReader<T,Capacity> &&) noexcept = default : void
+..
++operator=(const SPSCRingDropOldestReader<T,Capacity> &) = deleted : SPSCRingDropOldestReader<T,Capacity> &
++operator=(SPSCRingDropOldestReader<T,Capacity> &&) noexcept = default : SPSCRingDropOldestReader<T,Capacity> &
+..
++empty() const noexcept : bool
++pop(T & item) noexcept : bool
+{static} +usable_capacity() constexpr noexcept : size_t
+__
+-core_ : SPSCRingDropOldestCore<T,Capacity> &
+}
+class "stam::primitives::SPSCRingDropOldestWriter<T,Capacity>" as C_0014497942183069238277
+class C_0014497942183069238277 {
+__
+}
+class "stam::primitives::SPSCRingDropOldestReader<T,Capacity>" as C_0003011601719623296263
+class C_0003011601719623296263 {
+__
+}
+class "stam::primitives::SPSCRingDropOldest<T,size_t Capacity>" as C_0017766503131902671828
+class C_0017766503131902671828 {
++SPSCRingDropOldest() = default : void
++SPSCRingDropOldest(const SPSCRingDropOldest<T,Capacity> &) = deleted : void
+..
++operator=(const SPSCRingDropOldest<T,Capacity> &) = deleted : SPSCRingDropOldest<T,Capacity> &
+..
++core() noexcept : SPSCRingDropOldestCore<T,Capacity> &
++core() const noexcept : const SPSCRingDropOldestCore<T,Capacity> &
++reader() noexcept : SPSCRingDropOldestReader<T,Capacity>
++writer() noexcept : SPSCRingDropOldestWriter<T,Capacity>
+__
+-core_ : SPSCRingDropOldestCore<T,Capacity>
+-issued_reader_ : std::atomic<bool>
+-issued_writer_ : std::atomic<bool>
+{static} +max_readers : const size_t
+}
+class "stam::primitives::SPSCRingCore<T,size_t Capacity>" as C_0010709547327756212323
+class C_0010709547327756212323 {
+__
++buffer_ : T[]
++head_ : std::atomic<size_t>
++pad_ : char[64]
++tail_ : std::atomic<size_t>
+}
+class "stam::primitives::SPSCRingCore<T,Capacity>" as C_0003496546677799219385
+class C_0003496546677799219385 {
+__
+}
+class "stam::primitives::SPSCRingWriter<T,size_t Capacity>" as C_0012624673200880133313
+class C_0012624673200880133313 {
++SPSCRingWriter(SPSCRingCore<T,Capacity> & core) noexcept : void
++SPSCRingWriter(const SPSCRingWriter<T,Capacity> &) = deleted : void
++SPSCRingWriter(SPSCRingWriter<T,Capacity> &&) noexcept = default : void
+..
++operator=(const SPSCRingWriter<T,Capacity> &) = deleted : SPSCRingWriter<T,Capacity> &
++operator=(SPSCRingWriter<T,Capacity> &&) noexcept = default : SPSCRingWriter<T,Capacity> &
+..
++full() const noexcept : bool
++push(const T & item) noexcept : bool
+{static} +usable_capacity() constexpr noexcept : size_t
+__
+-core_ : SPSCRingCore<T,Capacity> &
+}
+class "stam::primitives::SPSCRingReader<T,size_t Capacity>" as C_0012884666638603945185
+class C_0012884666638603945185 {
++SPSCRingReader(SPSCRingCore<T,Capacity> & core) noexcept : void
++SPSCRingReader(const SPSCRingReader<T,Capacity> &) = deleted : void
++SPSCRingReader(SPSCRingReader<T,Capacity> &&) noexcept = default : void
+..
++operator=(const SPSCRingReader<T,Capacity> &) = deleted : SPSCRingReader<T,Capacity> &
++operator=(SPSCRingReader<T,Capacity> &&) noexcept = default : SPSCRingReader<T,Capacity> &
+..
++empty() const noexcept : bool
++pop(T & item) noexcept : bool
+{static} +usable_capacity() constexpr noexcept : size_t
+__
+-core_ : SPSCRingCore<T,Capacity> &
+}
+class "stam::primitives::SPSCRingWriter<T,Capacity>" as C_0015664274367413535682
+class C_0015664274367413535682 {
+__
+}
+class "stam::primitives::SPSCRingReader<T,Capacity>" as C_0017311453325491977470
+class C_0017311453325491977470 {
+__
+}
+class "stam::primitives::SPSCRing<T,size_t Capacity>" as C_0000657446916274680925
+class C_0000657446916274680925 {
++SPSCRing() = default : void
++SPSCRing(const SPSCRing<T,Capacity> &) = deleted : void
+..
++operator=(const SPSCRing<T,Capacity> &) = deleted : SPSCRing<T,Capacity> &
+..
++core() noexcept : SPSCRingCore<T,Capacity> &
++core() const noexcept : const SPSCRingCore<T,Capacity> &
++reader() noexcept : SPSCRingReader<T,Capacity>
++writer() noexcept : SPSCRingWriter<T,Capacity>
+__
+-core_ : SPSCRingCore<T,Capacity>
+-issued_reader_ : std::atomic<bool>
+-issued_writer_ : std::atomic<bool>
+{static} +max_readers : const size_t
+}
+C_0002817179293530496008 o-- C_0015261936227309846749 : -ctrl
+C_0002817179293530496008 o-- C_0008604760910988513082 : -slot
+C_0015261936227309846749 --+ C_0002817179293530496008
+C_0008604760910988513082 --+ C_0002817179293530496008
+C_0008575402290076407665 --> C_0002817179293530496008 : -core_
+C_0006182508413659904594 --> C_0002817179293530496008 : -core_
+C_0001715990290330560999 ..> C_0008575402290076407665
+C_0001715990290330560999 ..> C_0006182508413659904594
+C_0001715990290330560999 o-- C_0002817179293530496008 : -core_
+C_0010089975920967910986 ..> C_0002817179293530496008
+C_0006941305036539648566 o-- "2" C_0015668292334244147847 : -buffers
+C_0015668292334244147847 --+ C_0006941305036539648566
+C_0003242087125081797353 --> C_0006941305036539648566 : -core_
+C_0018259576408047266629 --> C_0006941305036539648566 : -core_
+C_0017526719928828330534 ..> C_0003242087125081797353
+C_0017526719928828330534 ..> C_0018259576408047266629
+C_0017526719928828330534 o-- C_0006941305036539648566 : -core_
+C_0005540786595695757110 ..> C_0006941305036539648566
+C_0003987304931812434319 o-- "2" C_0016281169489551409945 : -slots
+C_0003987304931812434319 o-- "2" C_0017749188605360224892 : -seqs
+C_0003987304931812434319 o-- C_0004149801921266033076 : -ctrl
+C_0016281169489551409945 --+ C_0003987304931812434319
+C_0017749188605360224892 --+ C_0003987304931812434319
+C_0004149801921266033076 --+ C_0003987304931812434319
+C_0001027172266907651731 --> C_0003987304931812434319 : -core_
+C_0013092403875595218818 --> C_0003987304931812434319 : -core_
+C_0003490760970449199632 ..> C_0001027172266907651731
+C_0003490760970449199632 ..> C_0013092403875595218818
+C_0003490760970449199632 o-- C_0003987304931812434319 : -core_
+C_0000374270276111721947 ..> C_0003987304931812434319
+C_0009771022490368662294 ..|> C_0001893142792537317020
+C_0006171309695918532247 o-- "2" C_0011897378263689174972 : -slots
+C_0006171309695918532247 o-- C_0009771022490368662294 : -pub_state
+C_0006171309695918532247 o-- C_0009771022490368662294 : -lock_state
+C_0011897378263689174972 --+ C_0006171309695918532247
+C_0008974762851989866322 --> C_0006171309695918532247 : -core_
+C_0002723753537810395226 --> C_0006171309695918532247 : -core_
+C_0013299579330091153409 ..> C_0008974762851989866322
+C_0013299579330091153409 ..> C_0002723753537810395226
+C_0013299579330091153409 o-- C_0006171309695918532247 : -core_
+C_0004105587186998645777 ..> C_0006171309695918532247
+C_0004474115653897775636 o-- C_0005966155963287291371 : +slots
+C_0004474115653897775636 o-- C_0016972558723026846068 : +seq
+C_0004474115653897775636 o-- C_0014597980420030211098 : +ctrl
+C_0005966155963287291371 --+ C_0004474115653897775636
+C_0016972558723026846068 --+ C_0004474115653897775636
+C_0014597980420030211098 --+ C_0004474115653897775636
+C_0012093770979917074333 ..|> C_0004474115653897775636
+C_0004023270455485922038 --> C_0012093770979917074333 : -core_
+C_0004023270455485922038 --> C_0004474115653897775636 : -core_
+C_0000618810915471914476 --> C_0012093770979917074333 : -core_
+C_0000618810915471914476 --> C_0004474115653897775636 : -core_
+C_0000283963174701617482 ..|> C_0004023270455485922038
+C_0000315716176141393361 ..|> C_0000618810915471914476
+C_0003163886742890060050 ..> C_0000283963174701617482
+C_0003163886742890060050 ..> C_0004023270455485922038
+C_0003163886742890060050 ..> C_0000315716176141393361
+C_0003163886742890060050 ..> C_0000618810915471914476
+C_0003163886742890060050 ..> C_0004474115653897775636
+C_0003163886742890060050 o-- C_0012093770979917074333 : -core_
+C_0012492583561315241336 o-- C_0010427957756692392037 : +slots
+C_0012492583561315241336 o-- C_0014704944811527619887 : +ctrl
+C_0010427957756692392037 --+ C_0012492583561315241336
+C_0014704944811527619887 --+ C_0012492583561315241336
+C_0017218345687814761228 ..|> C_0012492583561315241336
+C_0003781469958236718355 --> C_0017218345687814761228 : -core_
+C_0003781469958236718355 --> C_0012492583561315241336 : -core_
+C_0012342986525258823094 --> C_0017218345687814761228 : -core_
+C_0012342986525258823094 --> C_0012492583561315241336 : -core_
+C_0013100067399644984843 ..|> C_0003781469958236718355
+C_0006682529092032935099 ..|> C_0012342986525258823094
+C_0006254841375853636506 ..> C_0013100067399644984843
+C_0006254841375853636506 ..> C_0003781469958236718355
+C_0006254841375853636506 ..> C_0006682529092032935099
+C_0006254841375853636506 ..> C_0012342986525258823094
+C_0006254841375853636506 ..> C_0012492583561315241336
+C_0006254841375853636506 o-- C_0017218345687814761228 : -core_
+C_0006500088531630564590 ..|> C_0006664092178623163442
+C_0005895449271396092491 --> C_0006500088531630564590 : -core_
+C_0005895449271396092491 --> C_0006664092178623163442 : -core_
+C_0007354959876587972098 --> C_0006500088531630564590 : -core_
+C_0007354959876587972098 --> C_0006664092178623163442 : -core_
+C_0014497942183069238277 ..|> C_0005895449271396092491
+C_0003011601719623296263 ..|> C_0007354959876587972098
+C_0017766503131902671828 ..> C_0014497942183069238277
+C_0017766503131902671828 ..> C_0005895449271396092491
+C_0017766503131902671828 ..> C_0003011601719623296263
+C_0017766503131902671828 ..> C_0007354959876587972098
+C_0017766503131902671828 ..> C_0006664092178623163442
+C_0017766503131902671828 o-- C_0006500088531630564590 : -core_
+C_0003496546677799219385 ..|> C_0010709547327756212323
+C_0012624673200880133313 --> C_0003496546677799219385 : -core_
+C_0012624673200880133313 --> C_0010709547327756212323 : -core_
+C_0012884666638603945185 --> C_0003496546677799219385 : -core_
+C_0012884666638603945185 --> C_0010709547327756212323 : -core_
+C_0015664274367413535682 ..|> C_0012624673200880133313
+C_0017311453325491977470 ..|> C_0012884666638603945185
+C_0000657446916274680925 ..> C_0015664274367413535682
+C_0000657446916274680925 ..> C_0012624673200880133313
+C_0000657446916274680925 ..> C_0017311453325491977470
+C_0000657446916274680925 ..> C_0012884666638603945185
+C_0000657446916274680925 ..> C_0010709547327756212323
+C_0000657446916274680925 o-- C_0003496546677799219385 : -core_
+
+'Generated with clang-uml, version 0.6.2
+'LLVM version Ubuntu clang version 15.0.7
+@enduml

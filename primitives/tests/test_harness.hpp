@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstdint>
 #include <ctime>
+#include <cerrno>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -69,6 +70,9 @@ inline bool expect_child_abort(Fn&& fn) {
             return WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
         }
         if (r < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
             return false;
         }
         if (now_ms() >= deadline) {

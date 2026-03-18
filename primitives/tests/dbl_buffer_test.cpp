@@ -33,8 +33,7 @@ using namespace stam::primitives;
 
 namespace stam::primitives {
 
-template <typename T>
-class DoubleBufferCoreTest final {
+template <typename T> class DoubleBufferCoreTest final {
 public:
     static uint32_t published_value(const DoubleBufferCore<T>& core) noexcept {
         return core.published.load(std::memory_order_relaxed);

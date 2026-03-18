@@ -24,6 +24,24 @@
 
 using namespace stam::primitives;
 
+namespace stam::primitives {
+
+template <typename T> class DoubleBufferSeqLockTest final {
+public:
+    static uint32_t ctrl_seq_value(const DoubleBufferSeqLockCore<T>& core) noexcept {
+        return core.ctrl.seq.load(std::memory_order_relaxed);
+    }
+
+    static const char* ctrl_addr(const DoubleBufferSeqLockCore<T>& core) noexcept {
+        return reinterpret_cast<const char*>(&core.ctrl);
+    }
+
+    static const char* slot_addr(const DoubleBufferSeqLockCore<T>& core) noexcept {
+        return reinterpret_cast<const char*>(&core.slot);
+    }
+};
+
+} // namespace stam::primitives
 // ---------------------------------------------------------------------------
 // Minimal test harness (file-local counters)
 // ---------------------------------------------------------------------------
@@ -141,7 +159,7 @@ TEST(test_seq_even_after_write) {
     DoubleBufferSeqLock<Pod32> ch;
     auto writer = ch.writer();
     writer.write({1, 2});
-    EXPECT((ch.core().ctrl.seq.load(std::memory_order_relaxed) & 1u) == 0u);
+    EXPECT((DoubleBufferSeqLockTest<Pod32>::ctrl_seq_value(ch.core()) & 1u) == 0u);
 }
 
 TEST(test_multiple_reads_return_latest) {
@@ -209,26 +227,30 @@ TEST(test_reader_guard_fail_fast) {
 TEST(test_seq_initial_value) {
     // seq starts at 0 (even = quiescent).
     DoubleBufferSeqLock<Pod32> ch;
-    EXPECT(ch.core().ctrl.seq.load(std::memory_order_relaxed) == 0u);
+    EXPECT(DoubleBufferSeqLockTest<Pod32>::ctrl_seq_value(ch.core()) == 0u);
 }
 
 TEST(test_seq_cacheline_alignment) {
     DoubleBufferSeqLock<Pod32> ch;
-    const auto addr = reinterpret_cast<uintptr_t>(&ch.core().ctrl);
+    const auto addr = reinterpret_cast<uintptr_t>(
+        DoubleBufferSeqLockTest<Pod32>::ctrl_addr(ch.core()));
     EXPECT(addr % SYS_CACHELINE_BYTES == 0u);
 }
 
 TEST(test_slot_cacheline_alignment) {
     DoubleBufferSeqLock<Pod32> ch;
-    const auto addr = reinterpret_cast<uintptr_t>(&ch.core().slot);
+    const auto addr = reinterpret_cast<uintptr_t>(
+        DoubleBufferSeqLockTest<Pod32>::slot_addr(ch.core()));
     EXPECT(addr % SYS_CACHELINE_BYTES == 0u);
 }
 
 TEST(test_seq_separate_from_slot) {
     // seq and slot must be on separate cachelines.
     DoubleBufferSeqLock<Pod32> ch;
-    const auto seq_addr  = reinterpret_cast<uintptr_t>(&ch.core().ctrl);
-    const auto slot_addr = reinterpret_cast<uintptr_t>(&ch.core().slot);
+    const auto seq_addr  = reinterpret_cast<uintptr_t>(
+        DoubleBufferSeqLockTest<Pod32>::ctrl_addr(ch.core()));
+    const auto slot_addr = reinterpret_cast<uintptr_t>(
+        DoubleBufferSeqLockTest<Pod32>::slot_addr(ch.core()));
     const auto diff = static_cast<ptrdiff_t>(seq_addr) -
                       static_cast<ptrdiff_t>(slot_addr);
     EXPECT(std::abs(diff) >= static_cast<ptrdiff_t>(SYS_CACHELINE_BYTES));
@@ -376,7 +398,7 @@ TEST(test_stress_sustained) {
     EXPECT(torn.load() == 0);
     EXPECT(reads.load() > 0);
     // seq must be even (write closed) after all threads exit.
-    EXPECT((ch.core().ctrl.seq.load() & 1u) == 0u);
+    EXPECT((DoubleBufferSeqLockTest<Pod32>::ctrl_seq_value(ch.core()) & 1u) == 0u);
 }
 
 // ---------------------------------------------------------------------------

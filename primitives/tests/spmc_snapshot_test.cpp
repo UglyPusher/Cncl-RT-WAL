@@ -27,6 +27,40 @@
 
 using namespace stam::primitives;
 
+namespace stam::primitives {
+
+template <typename T, uint32_t N> class SPMCSnapshotTest final {
+public:
+    using Core = SPMCSnapshotCore<T, N>;
+    using busy_mask_word_t = typename Core::busy_mask_word_t;
+
+    static busy_mask_word_t busy_mask(const Core& core) noexcept {
+        return core.ctrl.busy_mask.load(std::memory_order_relaxed);
+    }
+
+    static bool initialized(const Core& core) noexcept {
+        return core.ctrl.initialized.load(std::memory_order_relaxed);
+    }
+
+    static uint8_t refcnt_value(const Core& core, uint32_t i) noexcept {
+        return core.refcnt[i].load(std::memory_order_relaxed);
+    }
+
+    static constexpr uint32_t k_slots() noexcept {
+        return Core::K;
+    }
+
+    static const char* slot_addr(const Core& core, uint32_t i) noexcept {
+        return reinterpret_cast<const char*>(&core.slots[i]);
+    }
+
+    static const char* ctrl_addr(const Core& core) noexcept {
+        return reinterpret_cast<const char*>(&core.ctrl);
+    }
+};
+
+} // namespace stam::primitives
+
 // ---------------------------------------------------------------------------
 // Minimal test harness (file-local counters)
 // ---------------------------------------------------------------------------
@@ -70,14 +104,19 @@ TEST(test_static_trivially_copyable) {
 
 TEST(test_slot_count) {
     // K = N + 2 for several N values (Slot Availability Theorem).
-    EXPECT((SPMCSnapshotCore<Pod32,  1>::K ==  3u));
-    EXPECT((SPMCSnapshotCore<Pod32,  2>::K ==  4u));
-    EXPECT((SPMCSnapshotCore<Pod32,  4>::K ==  6u));
-    EXPECT((SPMCSnapshotCore<Pod32, 30>::K == 32u));
+    using Test1  = SPMCSnapshotTest<Pod32, 1>;
+    using Test2  = SPMCSnapshotTest<Pod32, 2>;
+    using Test4  = SPMCSnapshotTest<Pod32, 4>;
+    using Test30 = SPMCSnapshotTest<Pod32, 30>;
+    EXPECT(Test1::k_slots() == 3u);
+    EXPECT(Test2::k_slots() == 4u);
+    EXPECT(Test4::k_slots() == 6u);
+    EXPECT(Test30::k_slots() == 32u);
 }
 
 TEST(test_lock_free_atomics) {
-    using busy_mask_word_t = SPMCSnapshotCore<Pod32, 2>::busy_mask_word_t;
+    using Test = SPMCSnapshotTest<Pod32, 2>;
+    using busy_mask_word_t = typename Test::busy_mask_word_t;
     EXPECT(std::atomic<busy_mask_word_t>::is_always_lock_free);
     EXPECT(std::atomic<uint8_t>::is_always_lock_free);
     EXPECT(std::atomic<bool>::is_always_lock_free);
@@ -85,10 +124,11 @@ TEST(test_lock_free_atomics) {
 
 TEST(test_core_initial_state) {
     SPMCSnapshot<Pod32, 2> ch;
-    EXPECT(ch.core().ctrl.busy_mask.load()   == 0u);
-    EXPECT(ch.core().ctrl.initialized.load() == false);
-    for (uint32_t i = 0; i < SPMCSnapshotCore<Pod32, 2>::K; ++i) {
-        EXPECT(ch.core().refcnt[i].load() == 0u);
+    using Test = SPMCSnapshotTest<Pod32, 2>;
+    EXPECT(Test::busy_mask(ch.core()) == 0u);
+    EXPECT(Test::initialized(ch.core()) == false);
+    for (uint32_t i = 0; i < Test::k_slots(); ++i) {
+        EXPECT(Test::refcnt_value(ch.core(), i) == 0u);
     }
 }
 
@@ -99,39 +139,42 @@ TEST(test_core_initial_state) {
 TEST(test_try_read_before_publish_returns_false) {
     SPMCSnapshot<Pod32, 1> ch;
     auto reader = ch.reader();
+    using Test = SPMCSnapshotTest<Pod32, 1>;
 
     Pod32 out{42, 42};
     EXPECT(!reader.try_read(out));
     // out must be unchanged on false return (no partial write)
     EXPECT(out.x == 42 && out.y == 42);
     // busy_mask must be zero: the early-out path must not claim any slot
-    EXPECT(ch.core().ctrl.busy_mask.load() == 0u);
+    EXPECT(Test::busy_mask(ch.core()) == 0u);
 }
 
 TEST(test_publish_then_read) {
     SPMCSnapshot<Pod32, 1> ch;
     auto writer = ch.writer();
     auto reader = ch.reader();
+    using Test = SPMCSnapshotTest<Pod32, 1>;
 
-    writer.publish({1, 2});
+    writer.write({1, 2});
 
     Pod32 out{};
     EXPECT(reader.try_read(out));
     EXPECT(out.x == 1 && out.y == 2);
     // Claim must be fully released after try_read.
-    EXPECT(ch.core().ctrl.busy_mask.load() == 0u);
+    EXPECT(Test::busy_mask(ch.core()) == 0u);
 }
 
 TEST(test_initialized_flag) {
     SPMCSnapshot<Pod32, 2> ch;
     auto writer = ch.writer();
+    using Test = SPMCSnapshotTest<Pod32, 2>;
 
-    EXPECT(ch.core().ctrl.initialized.load() == false);
-    writer.publish({7, 8});
-    EXPECT(ch.core().ctrl.initialized.load() == true);
+    EXPECT(Test::initialized(ch.core()) == false);
+    writer.write({7, 8});
+    EXPECT(Test::initialized(ch.core()) == true);
     // Idempotent: second publish must not change it.
-    writer.publish({9, 10});
-    EXPECT(ch.core().ctrl.initialized.load() == true);
+    writer.write({9, 10});
+    EXPECT(Test::initialized(ch.core()) == true);
 }
 
 TEST(test_always_returns_true_after_first_publish) {
@@ -140,7 +183,7 @@ TEST(test_always_returns_true_after_first_publish) {
     auto writer = ch.writer();
     auto reader = ch.reader();
 
-    writer.publish({1, 2});
+    writer.write({1, 2});
     for (int i = 0; i < 200; ++i) {
         Pod32 out{};
         EXPECT(reader.try_read(out));
@@ -152,9 +195,9 @@ TEST(test_latest_wins) {
     auto writer = ch.writer();
     auto reader = ch.reader();
 
-    writer.publish({1, 1});
-    writer.publish({2, 2});
-    writer.publish({3, 3});
+    writer.write({1, 1});
+    writer.write({2, 2});
+    writer.write({3, 3});
 
     Pod32 out{};
     EXPECT(reader.try_read(out));
@@ -167,7 +210,7 @@ TEST(test_multiple_readers_see_same_latest) {
     auto r1 = ch.reader();
     auto r2 = ch.reader();
 
-    writer.publish({10, 20});
+    writer.write({10, 20});
 
     Pod32 a{}, b{};
     EXPECT(r1.try_read(a));
@@ -182,7 +225,7 @@ TEST(test_interleaved_publish_read) {
     auto reader = ch.reader();
 
     for (int i = 0; i < 100; ++i) {
-        writer.publish({i, -i});
+        writer.write({i, -i});
         Pod32 out{};
         EXPECT(reader.try_read(out));
         EXPECT(out.x == i && out.y == -i);
@@ -196,7 +239,7 @@ TEST(test_repeat_publish_many) {
     auto reader = ch.reader();
 
     for (int i = 0; i < 1000; ++i) {
-        writer.publish({i, i * 2});
+        writer.write({i, i * 2});
     }
 
     Pod32 out{};
@@ -212,7 +255,7 @@ TEST(test_large_pod) {
     LargePod src{};
     for (int i = 0; i < 128; ++i) src.data[i] = static_cast<uint8_t>(i);
 
-    writer.publish(src);
+    writer.write(src);
 
     LargePod dst{};
     EXPECT(reader.try_read(dst));
@@ -223,15 +266,16 @@ TEST(test_busy_mask_zero_after_all_reads) {
     // All N readers read once; busy_mask must drain to 0 after every read.
     SPMCSnapshot<Pod32, 4> ch;
     auto writer = ch.writer();
+    using Test = SPMCSnapshotTest<Pod32, 4>;
 
-    writer.publish({1, 2});
+    writer.write({1, 2});
 
     Pod32 out{};
     for (int t = 0; t < 4; ++t) {
         auto reader = ch.reader();
         (void)reader.try_read(out);
     }
-    EXPECT(ch.core().ctrl.busy_mask.load() == 0u);
+    EXPECT(Test::busy_mask(ch.core()) == 0u);
 }
 
 TEST(test_refcnt_zero_after_reads) {
@@ -239,15 +283,16 @@ TEST(test_refcnt_zero_after_reads) {
     auto writer = ch.writer();
     auto r1 = ch.reader();
     auto r2 = ch.reader();
+    using Test = SPMCSnapshotTest<Pod32, 2>;
 
-    writer.publish({5, 6});
+    writer.write({5, 6});
 
     Pod32 out{};
     (void)r1.try_read(out);
     (void)r2.try_read(out);
 
-    for (uint32_t i = 0; i < SPMCSnapshotCore<Pod32, 2>::K; ++i) {
-        EXPECT(ch.core().refcnt[i].load() == 0u);
+    for (uint32_t i = 0; i < Test::k_slots(); ++i) {
+        EXPECT(Test::refcnt_value(ch.core(), i) == 0u);
     }
 }
 
@@ -281,6 +326,7 @@ TEST(test_spmc_n1_stress_no_torn_read) {
     constexpr int kFrames = 200'000;
 
     SPMCSnapshot<Pod32, 1> ch;
+    using Test = SPMCSnapshotTest<Pod32, 1>;
 
     std::atomic<bool> done{false};
     std::atomic<int>  torn{0};
@@ -288,7 +334,7 @@ TEST(test_spmc_n1_stress_no_torn_read) {
     std::thread writer_thread([&] {
         auto writer = ch.writer();
         for (int i = 1; i <= kFrames; ++i) {
-            writer.publish({i, -i});
+            writer.write({i, -i});
         }
         done.store(true, std::memory_order_release);
     });
@@ -309,7 +355,7 @@ TEST(test_spmc_n1_stress_no_torn_read) {
     reader_thread.join();
 
     EXPECT(torn.load() == 0);
-    EXPECT(ch.core().ctrl.busy_mask.load() == 0u);
+    EXPECT(Test::busy_mask(ch.core()) == 0u);
 }
 
 // N=2: two concurrent readers.  No torn reads, busy_mask drains on exit.
@@ -317,6 +363,7 @@ TEST(test_spmc_n2_stress_no_torn_read) {
     constexpr auto kDuration = std::chrono::milliseconds(150);
 
     SPMCSnapshot<Pod32, 2> ch;
+    using Test = SPMCSnapshotTest<Pod32, 2>;
 
     std::atomic<bool> stop{false};
     std::atomic<int>  torn{0};
@@ -326,7 +373,7 @@ TEST(test_spmc_n2_stress_no_torn_read) {
         auto writer = ch.writer();
         int i = 0;
         while (!stop.load(std::memory_order_relaxed)) {
-            writer.publish({++i, -i});
+            writer.write({++i, -i});
         }
     });
 
@@ -361,7 +408,7 @@ TEST(test_spmc_n2_stress_no_torn_read) {
     std::printf("    torn/read: %d/%d (%.6f)\n", torn_count, read_count, torn_per_read);
     EXPECT(read_count > 0);
     EXPECT(torn_count >= 0 && torn_count <= read_count);
-    EXPECT(ch.core().ctrl.busy_mask.load() == 0u);
+    EXPECT(Test::busy_mask(ch.core()) == 0u);
 }
 
 // N=4: four concurrent readers.  No torn reads; verifies K=6 is sufficient.
@@ -369,6 +416,7 @@ TEST(test_spmc_n4_stress_no_torn_read) {
     constexpr auto kDuration = std::chrono::milliseconds(150);
 
     SPMCSnapshot<Pod32, 4> ch;
+    using Test = SPMCSnapshotTest<Pod32, 4>;
 
     std::atomic<bool> stop{false};
     std::atomic<int>  torn{0};
@@ -378,7 +426,7 @@ TEST(test_spmc_n4_stress_no_torn_read) {
         auto writer = ch.writer();
         int i = 0;
         while (!stop.load(std::memory_order_relaxed)) {
-            writer.publish({++i, -i});
+            writer.write({++i, -i});
         }
     });
 
@@ -412,7 +460,7 @@ TEST(test_spmc_n4_stress_no_torn_read) {
     std::printf("    torn/read: %d/%d (%.6f)\n", torn_count, read_count, torn_per_read);
     EXPECT(read_count > 0);
     EXPECT(torn_count >= 0 && torn_count <= read_count);
-    EXPECT(ch.core().ctrl.busy_mask.load() == 0u);
+    EXPECT(Test::busy_mask(ch.core()) == 0u);
 }
 
 // Latest-wins: after writer finishes, every reader must see the last frame.
@@ -425,7 +473,7 @@ TEST(test_spmc_latest_wins_after_writer_done) {
     std::thread writer_thread([&] {
         auto writer = ch.writer();
         for (int i = 1; i <= kFrames; ++i) {
-            writer.publish({i, i});
+            writer.write({i, i});
         }
     });
     writer_thread.join();
@@ -444,6 +492,7 @@ TEST(test_spmc_n2_sustained_cleanup) {
     constexpr auto kDuration = std::chrono::milliseconds(100);
 
     SPMCSnapshot<Pod32, 2> ch;
+    using Test = SPMCSnapshotTest<Pod32, 2>;
 
     std::atomic<bool> stop{false};
 
@@ -451,7 +500,7 @@ TEST(test_spmc_n2_sustained_cleanup) {
         auto writer = ch.writer();
         int i = 0;
         while (!stop.load(std::memory_order_relaxed)) {
-            writer.publish({++i, -i});
+            writer.write({++i, -i});
         }
     });
 
@@ -475,9 +524,9 @@ TEST(test_spmc_n2_sustained_cleanup) {
     r2.join();
 
     // All claims must be released: busy_mask == 0, all refcnt == 0.
-    EXPECT(ch.core().ctrl.busy_mask.load() == 0u);
-    for (uint32_t i = 0; i < SPMCSnapshotCore<Pod32, 2>::K; ++i) {
-        EXPECT(ch.core().refcnt[i].load() == 0u);
+    EXPECT(Test::busy_mask(ch.core()) == 0u);
+    for (uint32_t i = 0; i < Test::k_slots(); ++i) {
+        EXPECT(Test::refcnt_value(ch.core(), i) == 0u);
     }
 }
 
@@ -488,8 +537,9 @@ TEST(test_spmc_n2_sustained_cleanup) {
 TEST(test_slot_cacheline_alignment) {
     // Each Slot must start on a cacheline boundary (no false sharing between slots).
     SPMCSnapshot<Pod32, 2> ch;
-    for (uint32_t i = 0; i < SPMCSnapshotCore<Pod32, 2>::K; ++i) {
-        const auto addr = reinterpret_cast<uintptr_t>(&ch.core().slots[i]);
+    using Test = SPMCSnapshotTest<Pod32, 2>;
+    for (uint32_t i = 0; i < Test::k_slots(); ++i) {
+        const auto addr = reinterpret_cast<uintptr_t>(Test::slot_addr(ch.core(), i));
         EXPECT(addr % SYS_CACHELINE_BYTES == 0u);
     }
 }
@@ -497,7 +547,8 @@ TEST(test_slot_cacheline_alignment) {
 TEST(test_ctrl_cacheline_alignment) {
     // Control block must start on a cacheline boundary.
     SPMCSnapshot<Pod32, 2> ch;
-    const auto addr = reinterpret_cast<uintptr_t>(&ch.core().ctrl);
+    using Test = SPMCSnapshotTest<Pod32, 2>;
+    const auto addr = reinterpret_cast<uintptr_t>(Test::ctrl_addr(ch.core()));
     EXPECT(addr % SYS_CACHELINE_BYTES == 0u);
 }
 
@@ -505,9 +556,10 @@ TEST(test_ctrl_separate_from_slots) {
     // ctrl must not share a cacheline with any slot (avoids writer↔reader
     // false sharing on busy_mask / published accesses).
     SPMCSnapshot<Pod32, 2> ch;
-    const auto ctrl_addr = reinterpret_cast<uintptr_t>(&ch.core().ctrl);
-    for (uint32_t i = 0; i < SPMCSnapshotCore<Pod32, 2>::K; ++i) {
-        const auto slot_addr = reinterpret_cast<uintptr_t>(&ch.core().slots[i]);
+    using Test = SPMCSnapshotTest<Pod32, 2>;
+    const auto ctrl_addr = reinterpret_cast<uintptr_t>(Test::ctrl_addr(ch.core()));
+    for (uint32_t i = 0; i < Test::k_slots(); ++i) {
+        const auto slot_addr = reinterpret_cast<uintptr_t>(Test::slot_addr(ch.core(), i));
         const auto diff = static_cast<ptrdiff_t>(ctrl_addr) -
                           static_cast<ptrdiff_t>(slot_addr);
         EXPECT(std::abs(diff) >= static_cast<ptrdiff_t>(SYS_CACHELINE_BYTES));

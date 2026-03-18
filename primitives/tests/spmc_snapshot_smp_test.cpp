@@ -96,15 +96,16 @@ TEST(test_refcnt_and_busy_mask_cleanup) {
     auto w = ch.writer();
     auto r0 = ch.reader();
     auto r1 = ch.reader();
+    using Test = SPMCSnapshotSmpTest<Pod32, 2>;
 
     w.write({10, -10});
     Pod32 a{}, b{};
     EXPECT(r0.try_read(a));
     EXPECT(r1.try_read(b));
 
-    EXPECT(SPMCSnapshotSmpTest<Pod32, 2>::busy_mask(ch.core()) == 0u);
-    for (uint32_t i = 0; i < SPMCSnapshotSmpTest<Pod32, 2>::k_slots(); ++i) {
-        EXPECT(SPMCSnapshotSmpTest<Pod32, 2>::refcnt_value(ch.core(), i) == 0u);
+    EXPECT(Test::busy_mask(ch.core()) == 0u);
+    for (uint32_t i = 0; i < Test::k_slots(); ++i) {
+        EXPECT(Test::refcnt_value(ch.core(), i) == 0u);
     }
 }
 
@@ -191,6 +192,7 @@ TEST(test_stress_n2_no_torn_read) {
 TEST(test_stress_sustained_cleanup) {
     constexpr auto kDuration = std::chrono::milliseconds(200);
     SPMCSnapshotSmp<Pod32, 4> ch;
+    using Test = SPMCSnapshotSmpTest<Pod32, 4>;
 
     std::atomic<bool> stop{false};
     std::atomic<int> torn{0};
@@ -240,9 +242,9 @@ TEST(test_stress_sustained_cleanup) {
     std::printf("    torn/read: %d/%d (%.6f)\n", torn_count, read_count, torn_per_read);
     EXPECT(read_count > 0);
     EXPECT(torn_count == 0);
-    EXPECT(SPMCSnapshotSmpTest<Pod32, 4>::busy_mask(ch.core()) == 0u);
-    for (uint32_t i = 0; i < SPMCSnapshotSmpTest<Pod32, 4>::k_slots(); ++i) {
-        EXPECT(SPMCSnapshotSmpTest<Pod32, 4>::refcnt_value(ch.core(), i) == 0u);
+    EXPECT(Test::busy_mask(ch.core()) == 0u);
+    for (uint32_t i = 0; i < Test::k_slots(); ++i) {
+        EXPECT(Test::refcnt_value(ch.core(), i) == 0u);
     }
 }
 
