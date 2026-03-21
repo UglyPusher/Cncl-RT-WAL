@@ -1,0 +1,30 @@
+---
+BasedOnStyle: LLVM
+
+# Match existing project style (4-space indents, braces on next line for most constructs).
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+
+ColumnLimit: 100
+
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterClass: true
+  AfterControlStatement: true
+  AfterEnum: true
+  AfterFunction: true
+  AfterNamespace: false
+  AfterStruct: true
+  AfterUnion: true
+  BeforeCatch: true
+  BeforeElse: true
+  IndentBraces: false
+  SplitEmptyFunction: true
+  SplitEmptyRecord: true
+  SplitEmptyNamespace: true
+
+NamespaceIndentation: None
+
+# Avoid surprise churn; teams can enable once the style is stable.
+SortIncludes: false

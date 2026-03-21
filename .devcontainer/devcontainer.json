@@ -2,36 +2,37 @@
   "name": "rt-wal-dev",
   "dockerFile": "Dockerfile",
   "context": "..",
-
   "remoteUser": "root",
-
   "workspaceFolder": "/src",
-
+  "workspaceMount": "source=${localWorkspaceFolder},target=/src,type=bind,consistency=cached",
   "mounts": [
-    "source=${localWorkspaceFolder},target=/src,type=bind",
     "source=wal-build,target=/build,type=volume"
   ],
-
   "customizations": {
     "vscode": {
       "extensions": [
-        "ms-vscode.cpptools",
+        "llvm-vs-code-extensions.vscode-clangd",
         "ms-vscode.cmake-tools",
         "twxs.cmake",
-        "ms-vscode.hexeditor"
+        "ms-vscode.hexeditor",
+        "streetsidesoftware.code-spell-checker",
+        "usernamehw.errorlens", 
+        "cschlosser.doxdocgen",
+        "anthropic.claude-code",
+        "openai.chatgpt" 
       ],
       "settings": {
         "cmake.sourceDirectory": "/src",
         "cmake.buildDirectory": "/build",
-
-        "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
         "cmake.exportCompileCommandsFile": true,
-
         "cmake.configureOnOpen": false,
         "cmake.generator": "Ninja",
-
-        "C_Cpp.intelliSenseEngine": "Default",
-        "C_Cpp.intelliSenseCacheSize": 2048
+        "C_Cpp.intelliSenseEngine": "disabled",
+        "clangd.arguments": [
+          "--compile-commands-dir=/build",
+          "--clang-tidy",
+          "--header-insertion=never"
+        ]
       }
     }
   }
