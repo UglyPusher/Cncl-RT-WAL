@@ -8,6 +8,10 @@ RUN apt-get update && apt-get install -y \
     ninja-build \
     gdb \
     git \
+    clang \
+    clang-tidy \
+    clang-format \
+    bear \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
