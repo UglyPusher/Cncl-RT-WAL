@@ -1,7 +1,6 @@
 #pragma once
 #include "exec/tasks/task_wrapper.hpp"
 
-
 namespace stam::exec::tasks {
 
 struct TaskWrapperRef {
@@ -11,6 +10,7 @@ struct TaskWrapperRef {
     void (*alarm_fn)(void*) noexcept = nullptr;
     void (*done_fn)(void*) noexcept = nullptr;
     bool (*is_fully_bound_fn)(const void*) noexcept = nullptr;
+    void (*attach_hb_fn)(void*, std::atomic<stam::model::heartbeat_word_t>*) noexcept = nullptr;
 };
 
 template <class Payload>
@@ -32,6 +32,9 @@ TaskWrapperRef make_task_wrapper_ref(TaskWrapper<Payload>& wrapper) noexcept {
     };
     ref.is_fully_bound_fn = [](const void* obj) noexcept {
         return static_cast<const TaskWrapper<Payload>*>(obj)->is_fully_bound();
+    };
+    ref.attach_hb_fn = [](void* obj, std::atomic<stam::model::heartbeat_word_t>* hb) noexcept {
+        static_cast<TaskWrapper<Payload>*>(obj)->attach_hb(hb);
     };
 
     return ref;
