@@ -44,6 +44,13 @@
  * Core is intentionally encapsulated; production code should interact
  * with the primitive only via role views (Writer/Reader).
  * Tests may audit layout/fields via a dedicated friend under STAM_TEST.
+
+ * Note on copy size: The entire T is copied during write() and read().
+ * If T is large, the copy operation may take significant time, increasing
+ * the risk of preemption between the load of published and the actual copy.
+ * The caller must ensure non‑overlap of writer and reader for the entire duration of copy.
+ * For small trivially copyable types (≤ 64 bytes), consider std::atomic<T> where available
+ * and lock‑free.
  */
 
 #pragma once
@@ -148,6 +155,7 @@ template <typename T> class DoubleBufferReader final
 
     void read(T &out) const noexcept { core_.read(out); }
 
+    // Always returns true in UP implementation; kept for interface uniformity with SMP primitives.
     [[nodiscard]] bool try_read(T &out) const noexcept
     {
         read(out);
@@ -174,38 +182,41 @@ template <typename T> class DoubleBuffer final
 
     DoubleBuffer(const DoubleBuffer &) = delete;
     DoubleBuffer &operator=(const DoubleBuffer &) = delete;
+#ifdef STAM_TEST
+    friend class DoubleBufferCoreTest<T>;
+#endif
 
     [[nodiscard]] DoubleBufferWriter<T> writer() noexcept
     {
-        bool expected = false;
-        if (!issued_writer_.compare_exchange_strong(expected, true, std::memory_order_acq_rel,
-                                                    std::memory_order_acquire))
+        if (issued_writer_)
         {
-            assert(false && "DoubleBuffer::writer() already issued");
+            assert(!"DoubleBuffer::writer() already issued");
             std::abort();
         }
+
+        issued_writer_ = true;
         return DoubleBufferWriter<T>(core_);
     }
 
     [[nodiscard]] DoubleBufferReader<T> reader() const noexcept
     {
-        bool expected = false;
-        if (!issued_reader_.compare_exchange_strong(expected, true, std::memory_order_acq_rel,
-                                                    std::memory_order_acquire))
+        if (issued_reader_)
         {
-            assert(false && "DoubleBuffer::reader() already issued");
+            assert(!"DoubleBuffer::reader() already issued");
             std::abort();
         }
+
+        issued_reader_ = true;
         return DoubleBufferReader<T>(core_);
     }
 
-    DoubleBufferCore<T> &core() noexcept { return core_; }
-    const DoubleBufferCore<T> &core() const noexcept { return core_; }
-
   private:
     DoubleBufferCore<T> core_{};
-    std::atomic<bool> issued_writer_{false};
-    mutable std::atomic<bool> issued_reader_{false};
+    // std::atomic<bool> issued_writer_{false};
+    // mutable std::atomic<bool> issued_reader_{false};
+    bool issued_writer_{false};
+    mutable bool issued_reader_{
+        false}; // были atomic<bool>, в UP-конфигурации в атомиках нет необходимости.
 };
 
 } // namespace stam::primitives
