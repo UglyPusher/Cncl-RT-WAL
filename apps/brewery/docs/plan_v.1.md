@@ -273,6 +273,7 @@ UI:
 - [ ] Спека кадра STM32→STM8 (формат, CRC, период, ошибки, версия) + тест-векторы CRC.
 - [ ] Таблица safety/interlocks v1 (условие → действие → лог → `ack`) + коды причин.
 - [x] Спека рецепта v1: `apps/brewery/docs/recipe_spec_v1.md`.
+- [x] STM8: спек управления контактором v1: `apps/brewery/docs/stm8_contactor_spec_v1.md`.
 - [ ] Контракт HAL (STM32/STM8): перечень интерфейсов и ожидаемые ошибки/тайминги.
 
 ### STM8 (safety)
