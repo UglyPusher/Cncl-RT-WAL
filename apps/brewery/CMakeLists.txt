@@ -11,3 +11,4 @@ target_link_libraries(app_brewery
         stam_rtr
         module_logging
 )
+    
