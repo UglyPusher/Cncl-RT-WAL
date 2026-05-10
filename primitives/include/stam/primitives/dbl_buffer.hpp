@@ -99,7 +99,9 @@ template <typename T> class DoubleBufferCore final
 
     Slot buffers[2];
 
-    SYS_CACHELINE_ALIGN std::atomic<uint32_t> published{0};
+    using my_atomic = std::atomic<uint32_t>;
+
+    SYS_CACHELINE_ALIGN my_atomic published{0};
 
     void read(T &out) const noexcept
     {

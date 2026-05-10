@@ -1,0 +1,478 @@
+---
+# Brewery Controller — Channel Wiring
+# Two-controller architecture: STM32 (main) + ATtiny3216 (safety)
+# Generated from design session, May 2026
+
+meta:
+  version: "1.0"
+  project: brewery_controller
+  safety_class: may be SIL1
+  scheduler_tick_ms: 10
+
+# ─────────────────────────────────────────────────────────────────
+# CHANNEL TYPES
+# ─────────────────────────────────────────────────────────────────
+channel_types:
+  SPMC:
+    description: Single-Producer Multiple-Consumer snapshot (SeqLock). UP - wait-free, SMP - lock-free.
+    contains_tick: true
+    type: stam::primitives::SPMCSnapShot/SPMCSnapShotSMP
+  RING:
+    description: Event ring buffer, no heartbeat. Lock free. 
+    contains_tick: false
+  BUFFER:
+    description: Simple last-value double buffer. Lock-free
+    contains_tick: true
+
+
+# ─────────────────────────────────────────────────────────────────
+# DOMAIN DEFINITIONS
+# ─────────────────────────────────────────────────────────────────
+domains:
+  RT:
+    description: Real-time. Hard deadline, deterministic execution.
+  RT_HAL_DEP:
+    description: >
+      RT by contract. Real-time guarantee depends on HAL port.
+      HAL must provide bounded execution (no blocking calls, no bus waits).
+      Violation of HAL contract degrades task to NON_RT.
+      Responsibility lies with the HAL port, not the task.
+  NON_RT:
+    description: Non-real-time. Soft deadline, timing non-critical.
+
+# ─────────────────────────────────────────────────────────────────
+# SYSTEM_DOWN
+# ─────────────────────────────────────────────────────────────────
+system_down:
+  description: >
+    Unified scheduler stop procedure. Called by any task on fatal condition.
+    Transfers all actuators to safe state, stops scheduler,
+    passes reason to post-mortem handler (display, buzzer, wait).
+  reasons:
+    - BREW_COMPLETE   # normal end of recipe
+    - SAFETY_FAULT    # safety condition triggered
+    - USER_STOP       # operator command
+    - WDT_FAULT       # heartbeat loss (scheduler or ATtiny)
+
+# ─────────────────────────────────────────────────────────────────
+# CONTROLLER: STM32 (main)
+# ─────────────────────────────────────────────────────────────────
+stm32:
+  description: Main brewing controller
+  mcu: STM32F1xx / STM32F4xx / GD32F5xx / RP2040
+  scheduler_tick_ms: 10
+
+  channels:
+    RT_TIME_buffer:
+      type: BUFFER
+      producer: RTC_TSK
+      consumers: [RECEIP_TSK, TEMP_SNSR_TSK]
+      data:
+        - C_TIME
+        - tick
+
+    EVT_BTNS_RING:
+      type: RING
+      producer: BTN_TSK
+      consumers: [RECEIP_TSK]
+
+    RCP_DATA_SPMC:
+      type: SPMC
+      producer: RECEIP_TSK
+      consumers: [HEAT_ACT_TSK, PUMP_ACT_TSK, OUT_TSK, SAFETY_TSK]
+      data:
+        - TEMP_GOAL
+        - PUMP_FLAG
+        - HEAT_FLAG
+        - BREWING_STAGE
+        - tick
+
+    RCP_ALERTS_RING:
+      type: RING
+      producer: RECEIP_TSK
+      consumers: [OUT_TSK]
+      data:
+        - REMOVE_GRAIN
+        - ADD_HOP
+        - BREW_DONE
+
+    CRRNT_TEMP_SPMC:
+      type: SPMC
+      producer: TEMP_SNSR_TSK
+      consumers: [HEAT_ACT_TSK, PUMP_ACT_TSK, SAFETY_TSK, OUT_TSK]
+      data:
+        - current_temp
+        - sensor_state
+        - tick
+
+    CRRNT_FLOW_SPMC:
+      type: SPMC
+      producer: FLOW_SNSR_TSK
+      consumers: [SAFETY_TSK]
+      data:
+        - current_flow
+        - tick
+
+    HTR_STATE_SPMC:
+      type: SPMC
+      producer: HEAT_ACT_TSK
+      consumers: [SAFETY_TSK, OUT_TSK]
+      data:
+        - heater_on_off
+        - tick
+
+    PMP_STATE_SPMC:
+      type: SPMC
+      producer: PUMP_ACT_TSK
+      consumers: [SAFETY_TSK, OUT_TSK]
+      data:
+        - pump_on_off_rest
+        - tick
+
+  tasks:
+    RECEIP_TSK:
+      domain: RT
+      period_ms: 100
+      offset_ms: 0
+      description: >
+        Recipe execution in AUTO and MANUAL modes.
+        AUTO: manages stages, temperatures, pauses, alerts.
+        MANUAL: direct temperature and pump control by operator.
+      inputs:
+        - channel: RT_TIME_buffer
+          name: IN_RTC
+          data: [C_TIME]
+          purpose: pause timing (delta-t computation)
+        - channel: EVT_BTNS_RING
+          name: IN_BTNS
+          data: [PAUSE, STOP, TEMP_UP, TEMP_DOWN, PUMP_ON_OFF]
+      outputs:
+        - channel: RCP_DATA_SPMC
+          name: OUT_RCP_DATA
+          data: [TEMP_GOAL, PUMP_FLAG, HEAT_FLAG, BREWING_STAGE, tick]
+        - channel: RCP_ALERTS_RING
+          name: OUT_RCP_ALERTS
+          data: [REMOVE_GRAIN, ADD_HOP, BREW_DONE]
+      notes:
+        - tick is scheduler step parameter, not wall clock
+        - tick may be stopped (pause); RTC cannot be stopped
+        - BREW_DONE triggers SYSTEM_DOWN(BREW_COMPLETE)
+
+    TEMP_SNSR_TSK:
+      domain: NON_RT
+      period_ms: 50
+      offset_ms: 30
+      description: >
+        DS18B20 temperature sensor read via internal FSM.
+        HAL::GetTemp() hides implementation (polling/DMA/interrupt).
+      inputs:
+        - channel: RT_TIME_buffer
+          name: IN_C_TIME
+          data: [C_TIME]
+          purpose: 750ms conversion timing
+      outputs:
+        - channel: CRRNT_TEMP_SPMC
+          name: OUT_TEMP
+          data: [current_temp, sensor_state, tick]
+      internal_fsm:
+        states: [IDLE, CONVERTING, READING]
+        transitions:
+          - IDLE → CONVERTING: start conversion, record timestamp
+          - CONVERTING → READING: delta_t >= 750ms
+          - READING → IDLE: HAL::GetTemp(), write SPMC, update tick
+      hal:
+        function: HAL::GetTemp()
+        contract: implementation-defined per platform
+
+    FLOW_SNSR_TSK:
+      domain: NON_RT
+      period_ms: 100
+      offset_ms: 25
+      description: >
+        Flow sensor read via HAL::GetFlow().
+        Sensor type (pulse/analog) defined by BOM.
+      inputs: []
+      outputs:
+        - channel: CRRNT_FLOW_SPMC
+          name: OUT_FLOW
+          data: [current_flow, tick]
+      hal:
+        function: HAL::GetFlow()
+        contract: implementation-defined per BOM
+      future_use:
+        - pump power regulation
+
+    HEAT_ACT_TSK:
+      domain: RT_HAL_DEP
+      period_ms: 50
+      offset_ms: 10
+      description: >
+        Heater control via hysteresis regulator.
+        HEAT_FLAG=0 forces heater off regardless of temperature.
+      inputs:
+        - channel: RCP_DATA_SPMC
+          name: IN_RCP_DATA
+          data: [TEMP_GOAL, HEAT_FLAG]
+        - channel: CRRNT_TEMP_SPMC
+          name: IN_CRNT_TEMP
+          data: [current_temp]
+      outputs:
+        - channel: HTR_STATE_SPMC
+          name: OUT_HTR_STATE
+          data: [heater_on_off, tick]
+      algorithm: hysteresis
+      hal:
+        function: HAL::SetHeater()
+        contract: bounded execution, no blocking calls
+
+    PUMP_ACT_TSK:
+      domain: RT_HAL_DEP
+      period_ms: 50
+      offset_ms: 20
+      description: >
+        Pump control with internal motor rest FSM.
+        PUMP_FLAG=0 forces pump off from any state.
+        REST state protects motor regardless of external signal.
+      inputs:
+        - channel: RCP_DATA_SPMC
+          name: IN_RCP_DATA
+          data: [PUMP_FLAG]
+        - channel: CRRNT_TEMP_SPMC
+          name: IN_CRNT_TEMP
+          data: [current_temp]
+      outputs:
+        - channel: PMP_STATE_SPMC
+          name: OUT_PMP_STATE
+          data: [pump_on_off_rest, tick]
+      internal_fsm:
+        states: [OFF, ON, REST]
+        transitions:
+          - any → OFF: PUMP_FLAG == 0 (immediate)
+          - OFF → ON: PUMP_FLAG == 1
+          - ON → REST: worked N ticks
+          - REST → ON: rested M ticks
+        constants:
+          N: compile-time constant (work ticks)
+          M: compile-time constant (rest ticks)
+      hal:
+        function: HAL::SetPump()
+        contract: bounded execution, no blocking calls
+
+    RTC_TSK:
+      domain: NON_RT
+      period_ms: 100
+      offset_ms: 75
+      description: >
+        Real-time clock read via HAL::GetTime().
+        Hides internal (STM32 RTC) or external RTC.
+        Accuracy guaranteed by hardware, not by task timing.
+      inputs: []
+      outputs:
+        - channel: RT_TIME_buffer
+          name: OUT_RTC
+          data: [C_TIME, tick]
+      hal:
+        function: HAL::GetTime()
+        contract: no blocking calls
+
+    BTN_TSK:
+      domain: NON_RT
+      period_ms: 10
+      offset_ms: 0
+      description: >
+        Button read with software debounce.
+        HAL::GetButtons() reads GPIO; debounce is internal FSM.
+      inputs: []
+      outputs:
+        - channel: EVT_BTNS_RING
+          name: OUT_BTNS
+          data: [PAUSE, STOP, TEMP_UP, TEMP_DOWN, PUMP_ON_OFF]
+      internal_fsm:
+        description: software debounce
+      hal:
+        function: HAL::GetButtons()
+        contract: GPIO read, no blocking
+      extensions:
+        - encoder support (out of scope, future)
+
+    SAFETY_TSK:
+      domain: RT
+      period_ms: 50
+      offset_ms: 0
+      priority: highest
+      description: >
+        System safety monitor. Reads all observable channels.
+        On any fault condition calls SYSTEM_DOWN().
+        Also manages bidirectional heartbeat with ATtiny3216 safety controller.
+      inputs:
+        - channel: CRRNT_TEMP_SPMC
+          name: IN_CRNT_TEMP
+          data: [current_temp, tick]
+        - channel: HTR_STATE_SPMC
+          name: IN_HTR_STATE
+          data: [heater_on_off, tick]
+        - channel: PMP_STATE_SPMC
+          name: IN_PMP_STATE
+          data: [pump_on_off_rest, tick]
+        - channel: CRRNT_FLOW_SPMC
+          name: IN_FLOW
+          data: [current_flow, tick]
+        - channel: RCP_DATA_SPMC
+          name: IN_RCP_DATA
+          data: [tick]
+          purpose: scheduler observability
+        - gpio: GPIO1_ATTINY_HEARTBEAT
+          purpose: ATtiny3216 alive signal (meander)
+        - gpio: GPIO2_ATTINY_FAULT
+          purpose: ATtiny3216 fault signal (level)
+      outputs:
+        - uart_tx: heartbeat_frame_to_attiny
+          hal: HAL::SendHeartbeat()
+          contract: >
+            Places frame into TX ring buffer only. Returns immediately.
+            UART TX interrupt drains buffer asynchronously.
+            Bounded execution guaranteed.
+      fault_conditions:
+        - condition: GPIO1 no change for 150ms
+          action: SYSTEM_DOWN(WDT_FAULT)
+        - condition: GPIO2 == 1
+          action: SYSTEM_DOWN(SAFETY_FAULT)
+        - condition: TICK unchanged (scheduler stall detected)
+          action: SYSTEM_DOWN(WDT_FAULT)
+      heartbeat_frame:
+        period_ms: 50
+        timeout_ms: 150
+        format: [T_CURRENT, T_GOAL, FLAGS, TICK_HI, TICK_LO, CRC8]
+        flags:
+          bit0: HTR_STATE
+          bit1: PMP_STATE
+          bit2: FLOW_STATE
+          bit3_7: reserved
+        crc: CRC8
+
+    OUT_TSK:
+      domain: NON_RT
+      period_ms: 100
+      offset_ms: 50
+      description: >
+        Output interface task. Platform-dependent.
+        What and where to display/beep/blink is internal concern.
+      inputs:
+        - channel: RCP_DATA_SPMC
+          name: IN_RCP_DATA
+          data: [TEMP_GOAL, PUMP_FLAG, HEAT_FLAG, BREWING_STAGE]
+        - channel: RCP_ALERTS_RING
+          name: IN_RCP_ALERTS
+          data: [REMOVE_GRAIN, ADD_HOP, BREW_DONE]
+        - channel: CRRNT_TEMP_SPMC
+          name: IN_CRNT_TEMP
+          data: [current_temp]
+        - channel: HTR_STATE_SPMC
+          name: IN_HTR_STATE
+          data: [heater_on_off]
+        - channel: PMP_STATE_SPMC
+          name: IN_PMP_STATE
+          data: [pump_on_off_rest]
+      outputs: []
+      notes:
+        - CRRNT_FLOW not displayed (out of scope)
+        - RCP_ALERTS processed per call (ring drained each 100ms)
+        - display/buzzer/LED implementation platform-dependent
+
+# ─────────────────────────────────────────────────────────────────
+# CONTROLLER: ATtiny3216 (safety)
+# ─────────────────────────────────────────────────────────────────
+attiny3216:
+  description: Independent safety controller
+  mcu: ATtiny3216 (AVR8, Microchip)
+  rationale: >
+    Different manufacturer (Microchip vs ST/GigaDevice),
+    different architecture (AVR8 vs ARM Cortex),
+    different process node.
+    Minimizes common-cause failure correlation with main STM32.
+  package: SOIC20 / SSOP20 / QFN20
+  gpio_available: 18
+
+  peripherals:
+    - name: DS18B20
+      interface: 1-Wire GPIO
+      purpose: independent temperature sensor
+    - name: POWER_RELAY
+      interface: GPIO output
+      purpose: cuts power to all consumers (heater, pump, all)
+    - name: UART_RX
+      interface: hardware USART RX
+      purpose: receive heartbeat frame from STM32
+    - name: GPIO_HEARTBEAT_OUT
+      interface: GPIO output
+      purpose: meander to STM32 (ATtiny alive signal)
+    - name: GPIO_FAULT_OUT
+      interface: GPIO output
+      purpose: fault level to STM32 (0=ok, 1=fault)
+    - name: LED_ALARM
+      interface: GPIO output
+      purpose: autonomous fault indication (works without STM32)
+
+  fault_conditions:
+    - condition: T_current > 102
+      unit: degC
+      action: POWER_OFF
+    - condition: T_current > T_goal + 10
+      unit: degC
+      action: POWER_OFF
+    - condition: heartbeat timeout > 150ms
+      action: POWER_OFF
+    - condition: CRC error >= 3 consecutive
+      action: POWER_OFF
+
+  on_fault:
+    - cut POWER_RELAY (consumers dead)
+    - set GPIO_FAULT_OUT = 1
+    - activate LED_ALARM
+    - STM32 remains powered (sees fault via GPIO2)
+
+  reset:
+    method: power cycle only
+    software_reset: false
+
+  heartbeat_protocol:
+    direction: STM32 → ATtiny3216
+    period_ms: 50
+    timeout_ms: 150
+    frame_bytes: 6
+    format: [T_CURRENT, T_GOAL, FLAGS, TICK_HI, TICK_LO, CRC8]
+    flags:
+      bit0: HTR_STATE
+      bit1: PMP_STATE
+      bit2: FLOW_STATE
+      bit3_7: reserved
+
+  bangbang_protocol:
+    direction: ATtiny3216 → STM32
+    gpio1: meander (toggle every N ms, ATtiny alive)
+    gpio2: fault level (0=normal, 1=fault)
+    stm32_interprets:
+      - gpio1_changing AND gpio2_eq_0: normal
+      - gpio1_changing AND gpio2_eq_1: SYSTEM_DOWN(SAFETY_FAULT)
+      - gpio1_not_changing_150ms: SYSTEM_DOWN(WDT_FAULT)
+
+  migration_path:
+    target: ATmega4809
+    trigger: IEC60730 certification required (CE marking)
+    effort: 1-2 days (HAL layer only)
+    rationale: >
+      Same AVR8 architecture, same toolchain.
+      All business logic, FSM, heartbeat protocol unchanged.
+      ATmega4809 adds Microchip IEC 60730 Class B software library.
+    sil_upgrade:
+      target: AVR SD (dual-core lockstep)
+      when: SIL2+ formal certification required
+      note: overkill for brewery application
+
+  extensions_out_of_scope:
+    - name: current_sensor_heater
+      purpose: detect welded SSR, open heater element
+    - name: current_sensor_pump
+      purpose: detect blockage, dry run (redundant with flow sensor)
+    - name: buzzer
+      purpose: autonomous audio alarm without STM32
