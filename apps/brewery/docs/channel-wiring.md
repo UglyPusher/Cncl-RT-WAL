@@ -1,5 +1,9 @@
 # Wiring задач ↔ каналов (STAM)
 
+> REFERENCE/LEGACY: актуальная модель задач и каналов для v1 ведётся в
+> `brewery-wiring.yaml`. Этот файл сохраняется как историческая заметка и
+> источник идей до миграции.
+
 Первая версия.
 Таблица “кто пишет → в какой канал → кто читает” для v1.
 
@@ -7,16 +11,16 @@
 | `temp_sensor_task/out_temp`           | `temperature_raw`     | `state_aggregator/in_temp`    |
 | `level_input_task/out_level`          | `level_raw`           | `state_aggregator/in_level`   |
 | `state_aggregator/out_temp_valid`     | `temperature_valid`   | `fsm_task/in_temp`            |
-|                                       |                       | `pid_task/in_temp`            |
+|                                       |                       | `heat_control_task/in_temp`            |
 |                                       |                       | `safety_task/in_temp`         |
 |                                       |                       | `ui_task/in_temp`             |
 |                                       |                       | `logger_task/in_temp`         |
 |                                       |                       | `stm8_link_task/in_temp`      |
 | `state_aggregator/out_level_state`    | `level_state`         | `fsm_task/in_level`           |  
 |                                       |                       | `safety_task/in_level`        |
-| `fsm_task/out_target`                 | `target_temp`         | `pid_task/in_target`          |
+| `fsm_task/out_target`                 | `target_temp`         | `heat_control_task/in_target`          |
 | `fsm_task/out_pump`                   | `pump_command`        | `actuator_task/in_pump`       |
-| `pid_task/out_power`                  | `heater_power`        | `actuator_task/in_power`      | 
+| `heat_control_task/out_heat`          | `heater_command`    | `actuator_task/in_heat`       |
 |                                       |                       | `safety_task/in_power`        |
 | `safety_task/out_trip`                | `safety_trip`         | `actuator_task/in_trip`       | 
 |                                       |                       | `stm8_link_task/in_trip`      | 
@@ -109,9 +113,10 @@ RT/HAL-dep. Период вызова критичен для своевреме
     current_temp из IN_CRNT_TEMP (CRRNT_TEMP SPMC)
 
 Алгоритм: гистерезисный регулятор.
+    Ширина гистерезиса: 0.5 °C вокруг TEMP_GOAL.
     HEAT_FLAG == 0 → нагрев выключен независимо от температуры.
-    HEAT_FLAG == 1 → temp < TEMP_GOAL - δ → HAL::SetHeater(ON)
-                     temp > TEMP_GOAL + δ → HAL::SetHeater(OFF)
+    HEAT_FLAG == 1 → temp <= TEMP_GOAL - 0.25 °C → HAL::SetHeater(ON)
+                     temp >= TEMP_GOAL + 0.25 °C → HAL::SetHeater(OFF)
 
 Выдаёт:
     Состояние нагревателя и tick в OUT_HTR_STATE (HTR_STATE SPMC).

@@ -208,6 +208,8 @@ stm32:
       offset_ms: 10
       description: >
         Heater control via hysteresis regulator.
+        Hysteresis width is 0.5 degC around TEMP_GOAL:
+        ON below TEMP_GOAL - 0.25 degC, OFF above TEMP_GOAL + 0.25 degC.
         HEAT_FLAG=0 forces heater off regardless of temperature.
       inputs:
         - channel: RCP_DATA_SPMC
@@ -221,6 +223,10 @@ stm32:
           name: OUT_HTR_STATE
           data: [heater_on_off, tick]
       algorithm: hysteresis
+      hysteresis:
+        width_degC: 0.5
+        on_below_delta_degC: 0.25
+        off_above_delta_degC: 0.25
       hal:
         function: HAL::SetHeater()
         contract: bounded execution, no blocking calls

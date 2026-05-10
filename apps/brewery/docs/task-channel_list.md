@@ -1,5 +1,9 @@
 # Перечень задач (STM32)
 
+> REFERENCE/LEGACY: актуальная модель задач и каналов для v1 ведётся в
+> `brewery-wiring.yaml`. Этот файл сохраняется как промежуточный список до
+> полной миграции.
+
 ## 1. sensor_task
 - Тип: NON-RT  
 - Читает каналы: —  
@@ -57,13 +61,13 @@
 
 ---
 
-## 5. pid_task
+## 5. heat_control_task
 - Тип: RT  
 - Читает каналы:  
   - temperature_valid / in_temp  
   - target_temp / in_target  
 - Пишет в каналы:  
-  - heater_power / out_power  
+  - heater_command / out_heat  
 - Зависит от железа (читает): —  
 - Наблюдает железо (читает): —  
 - Управляет железом (пишет): —  
@@ -75,7 +79,7 @@
 - Читает каналы:  
   - temperature_valid / in_temp  
   - level_state / in_level  
-  - heater_power / in_power  
+  - heater_command / in_heat  
   - mode_state / in_mode  
 - Пишет в каналы:  
   - safety_trip / out_trip  
@@ -89,7 +93,7 @@
 ## 7. actuator_task
 - Тип: RT  
 - Читает каналы:  
-  - heater_power / in_power  
+  - heater_command / in_heat  
   - pump_command / in_pump  
   - safety_trip / in_trip  
 - Пишет в каналы: —  
@@ -176,7 +180,7 @@
   - state_aggregator / out_temp_valid  
 - Читающие задачи:  
   - fsm_task / in_temp  
-  - pid_task / in_temp  
+  - heat_control_task / in_temp  
   - safety_task / in_temp  
   - ui_task / in_temp  
   - logger_task / in_temp  
@@ -201,7 +205,7 @@
 - Пишущие задачи:  
   - fsm_task / out_target  
 - Читающие задачи:  
-  - pid_task / in_target  
+  - heat_control_task / in_target  
 - Суть данных: целевая температура  
 - Тип канала (STAM): `Mailbox2Slot` (snapshot publish, last value)
 
@@ -217,13 +221,13 @@
 
 ---
 
-## 7. heater_power
+## 7. heater_command
 - Пишущие задачи:  
-  - pid_task / out_power  
+  - heat_control_task / out_heat  
 - Читающие задачи:  
   - actuator_task / in_power  
   - safety_task / in_power  
-- Суть данных: мощность ТЭНа (0..1)  
+- Суть данных: дискретная команда ТЭНа ON/OFF от гистерезисного регулятора нагрева  
 - Тип канала (STAM): `SPMCSnapshot` (single producer, multi consumer)
 
 ---
