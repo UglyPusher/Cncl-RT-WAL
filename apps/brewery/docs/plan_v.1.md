@@ -27,6 +27,19 @@
 - Ферментация (отдельный контур управления).
 - Автокоррекция рецепта под “особенности оборудования” (за рецепт отвечает технолог).
 
+### Жёсткие ограничения v1
+
+Не добавлять в v1:
+
+- PID;
+- adaptive control;
+- multiple temp arbitration;
+- smart flow regulation;
+- dynamic task graph;
+- runtime configuration of safety;
+- bidirectional STM32↔ATtiny protocol;
+- distributed consensus между МК.
+
 ## Предметная область: базовый процесс и режимы
 
 ### Базовый процесс варки (упрощённо)

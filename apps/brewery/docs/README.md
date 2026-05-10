@@ -39,6 +39,10 @@
 - Нагрев v1 управляется гистерезисным регулятором, без PID.
 - Ширина гистерезиса нагрева: 0.5 °C вокруг уставки.
 - Модель задач и каналов берётся из `brewery-wiring.yaml`.
+- Жёсткие ограничения v1 перечислены в `plan_v.1.md`: без PID,
+  adaptive control, multiple temp arbitration, smart flow regulation,
+  dynamic task graph, runtime safety configuration, bidirectional MCU protocol
+  и distributed consensus между МК.
 
 ## Оглавление по темам
 
