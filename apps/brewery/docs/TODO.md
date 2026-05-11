@@ -1,3 +1,21 @@
+---
+doc_id: BREWERY_DOCS_TODO
+title: Brewery Documentation TODO
+status: draft
+version: 1.0
+depends_on:
+  - SYS_INTENT_AUTOMATION_BOUNDARY@1.1
+  - BREWERY_V1_PLAN@1.0
+  - BREWERY_WIRING@1.0
+  - RECIPE_SPEC_V1@1.0
+  - SAFETY_CONTROLLER_V1@1.0
+  - SYSTEM_DOWN@1.0
+review_scope:
+  - blocking_specs
+  - document_alignment
+  - safety_open_items
+---
+
 # Brewery Docs TODO
 
 Список работ по доведению документации до состояния, пригодного для реализации
@@ -29,9 +47,9 @@
 ## Выравнивание документов
 
 - [ ] Сделать `brewery-wiring.yaml` единственным источником модели задач и каналов.
-- [ ] Убрать или явно пометить `scope: v2/out_of_scope` для flow sensor и независимого temperature sensor на ATtiny3216.
+- [x] Убрать или явно пометить `scope: v2/out_of_scope` для flow sensor и независимого temperature sensor на ATtiny3216.
 - [ ] Свести старые reference-файлы `channel-wiring.md` и `task-channel_list.md` к `brewery-wiring.yaml` или удалить после миграции.
-- [ ] Обновить `hw_scheme.md` под ATtiny3216 или пометить как legacy.
+- [x] Обновить `hw_scheme.md` под ATtiny3216 или пометить как legacy.
 
 ## Safety
 

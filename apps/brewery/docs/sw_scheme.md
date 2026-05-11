@@ -1,3 +1,13 @@
+---
+doc_id: SW_SCHEME_LEGACY
+title: Legacy Brewery Software State Sketch
+status: reference
+version: 0.1
+depends_on: []
+review_scope:
+  - legacy_state_model
+---
+
 Базовые состояния контроллера:
 
 INIT

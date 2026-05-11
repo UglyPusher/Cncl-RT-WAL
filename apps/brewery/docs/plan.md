@@ -1,3 +1,13 @@
+---
+doc_id: BREWERY_PLAN_LEGACY
+title: Brewery Controller Legacy Plan
+status: deprecated
+version: 0.1
+depends_on: []
+review_scope:
+  - historical_context
+---
+
 # Общий план разработки контроллера пивоварни
 
 > DEPRECATED: исторический черновик. Не использовать как источник решений для v1.

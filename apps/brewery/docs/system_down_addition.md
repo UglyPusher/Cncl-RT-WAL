@@ -1,3 +1,17 @@
+---
+doc_id: SYSTEM_DOWN
+title: Unconditional Actuator Shutdown Primitive
+status: draft
+version: 1.0
+depends_on:
+  - SYS_INTENT_AUTOMATION_BOUNDARY@1.1
+review_scope:
+  - safe_state
+  - rt_context
+  - scheduler_independence
+  - hardware_safety_relation
+---
+
 # Архитектурный постулат: Безусловное отключение исполнительных устройств
 
 ## Определение

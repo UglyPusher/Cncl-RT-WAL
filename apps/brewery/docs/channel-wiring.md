@@ -1,3 +1,15 @@
+---
+doc_id: CHANNEL_WIRING_LEGACY
+title: Legacy STAM Task Channel Wiring
+status: reference
+version: 0.1
+depends_on:
+  - BREWERY_WIRING@1.0
+review_scope:
+  - legacy_wiring
+  - migration_reference
+---
+
 # Wiring задач ↔ каналов (STAM)
 
 > REFERENCE/LEGACY: актуальная модель задач и каналов для v1 ведётся в

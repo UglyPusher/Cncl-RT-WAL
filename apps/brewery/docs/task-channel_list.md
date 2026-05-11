@@ -1,3 +1,15 @@
+---
+doc_id: TASK_CHANNEL_LIST_LEGACY
+title: Legacy STM32 Task List
+status: reference
+version: 0.1
+depends_on:
+  - BREWERY_WIRING@1.0
+review_scope:
+  - legacy_tasks
+  - migration_reference
+---
+
 # Перечень задач (STM32)
 
 > REFERENCE/LEGACY: актуальная модель задач и каналов для v1 ведётся в

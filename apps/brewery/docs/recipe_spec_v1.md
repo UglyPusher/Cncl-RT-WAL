@@ -1,3 +1,18 @@
+---
+doc_id: RECIPE_SPEC_V1
+title: Brewery Recipe Specification v1
+status: draft
+version: 1.0
+depends_on:
+  - SYS_INTENT_AUTOMATION_BOUNDARY@1.1
+review_scope:
+  - recipe_model
+  - validation
+  - storage
+  - ui_scenarios
+  - safety_boundary
+---
+
 # Спецификация рецепта v1 (brewery)
 
 Документ описывает формат “рецепта” для режима **АВТО** в v1. Рецепт не содержит safety‑порогов и не может отменять interlock’и.

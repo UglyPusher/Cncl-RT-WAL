@@ -1,4 +1,20 @@
 ---
+doc_id: BREWERY_WIRING
+title: Brewery Controller Channel Wiring
+status: draft
+version: 1.0
+depends_on:
+  - SYS_INTENT_AUTOMATION_BOUNDARY@1.1
+  - RECIPE_SPEC_V1@1.0
+  - SAFETY_CONTROLLER_V1@1.0
+  - SYSTEM_DOWN@1.0
+review_scope:
+  - task_graph
+  - channels
+  - payloads
+  - rt_nonrt_boundary
+  - system_down_flow
+
 # Brewery Controller — Channel Wiring
 # Two-controller architecture: STM32 (main) + ATtiny3216 (safety)
 # Generated from design session, May 2026
@@ -6,7 +22,7 @@
 meta:
   version: "1.0"
   project: brewery_controller
-  safety_class: may be SIL1
+  safety_class: non_certified_prototype
   scheduler_tick_ms: 10
 
 # ─────────────────────────────────────────────────────────────────
@@ -106,9 +122,10 @@ stm32:
         - tick
 
     CRRNT_FLOW_SPMC:
+      scope: out_of_scope_v1
       type: SPMC
       producer: FLOW_SNSR_TSK
-      consumers: [SAFETY_TSK]
+      consumers: []
       data:
         - current_flow
         - tick
@@ -185,6 +202,7 @@ stm32:
         contract: implementation-defined per platform
 
     FLOW_SNSR_TSK:
+      scope: out_of_scope_v1
       domain: NON_RT
       period_ms: 100
       offset_ms: 25
@@ -309,7 +327,8 @@ stm32:
       description: >
         System safety monitor. Reads all observable channels.
         On any fault condition calls SYSTEM_DOWN().
-        Also manages bidirectional heartbeat with ATtiny3216 safety controller.
+        Sends STM32 semantic heartbeat frames to ATtiny3216 over one-way USART
+        and supervises ATtiny3216 liveness/fault GPIO signals.
       inputs:
         - channel: CRRNT_TEMP_SPMC
           name: IN_CRNT_TEMP
@@ -320,9 +339,6 @@ stm32:
         - channel: PMP_STATE_SPMC
           name: IN_PMP_STATE
           data: [pump_on_off_rest, tick]
-        - channel: CRRNT_FLOW_SPMC
-          name: IN_FLOW
-          data: [current_flow, tick]
         - channel: RCP_DATA_SPMC
           name: IN_RCP_DATA
           data: [tick]
@@ -348,12 +364,11 @@ stm32:
       heartbeat_frame:
         period_ms: 50
         timeout_ms: 150
-        format: [T_CURRENT, T_GOAL, FLAGS, TICK_HI, TICK_LO, CRC8]
+        format: [T_CURRENT_X2, FLAGS, TICK_HI, TICK_LO, CRC8]
         flags:
           bit0: HTR_STATE
           bit1: PMP_STATE
-          bit2: FLOW_STATE
-          bit3_7: reserved
+          bit2_7: reserved
         crc: CRC8
 
     OUT_TSK:
@@ -400,15 +415,15 @@ attiny3216:
   gpio_available: 18
 
   peripherals:
-    - name: DS18B20
-      interface: 1-Wire GPIO
-      purpose: independent temperature sensor
-    - name: POWER_RELAY
+    - name: CONTACTOR
       interface: GPIO output
-      purpose: cuts power to all consumers (heater, pump, all)
+      purpose: gates ACTUATOR_POWER_DOMAIN
     - name: UART_RX
       interface: hardware USART RX
-      purpose: receive heartbeat frame from STM32
+      purpose: receive state frame / semantic heartbeat from STM32
+    - name: LEVEL_OK_IN
+      interface: GPIO input
+      purpose: independent level OK signal
     - name: GPIO_HEARTBEAT_OUT
       interface: GPIO output
       purpose: meander to STM32 (ATtiny alive signal)
@@ -420,19 +435,18 @@ attiny3216:
       purpose: autonomous fault indication (works without STM32)
 
   fault_conditions:
-    - condition: T_current > 102
+    - condition: T_current >= 102
       unit: degC
-      action: POWER_OFF
-    - condition: T_current > T_goal + 10
-      unit: degC
-      action: POWER_OFF
-    - condition: heartbeat timeout > 150ms
-      action: POWER_OFF
-    - condition: CRC error >= 3 consecutive
-      action: POWER_OFF
+      action: CONTACTOR_OFF
+    - condition: valid frame timeout > 150ms
+      action: CONTACTOR_OFF
+    - condition: CRC error >= CRC_FAIL_LIMIT consecutive
+      action: CONTACTOR_OFF
+    - condition: LEVEL_OK_IN == false
+      action: CONTACTOR_OFF
 
   on_fault:
-    - cut POWER_RELAY (consumers dead)
+    - set CONTACTOR = OFF
     - set GPIO_FAULT_OUT = 1
     - activate LED_ALARM
     - STM32 remains powered (sees fault via GPIO2)
@@ -445,13 +459,12 @@ attiny3216:
     direction: STM32 → ATtiny3216
     period_ms: 50
     timeout_ms: 150
-    frame_bytes: 6
-    format: [T_CURRENT, T_GOAL, FLAGS, TICK_HI, TICK_LO, CRC8]
+    frame_bytes: TBD
+    format: [T_CURRENT_X2, FLAGS, TICK_HI, TICK_LO, CRC8]
     flags:
       bit0: HTR_STATE
       bit1: PMP_STATE
-      bit2: FLOW_STATE
-      bit3_7: reserved
+      bit2_7: reserved
 
   bangbang_protocol:
     direction: ATtiny3216 → STM32

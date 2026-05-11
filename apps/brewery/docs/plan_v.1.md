@@ -1,3 +1,21 @@
+---
+doc_id: BREWERY_V1_PLAN
+title: Brewery Controller v1 Pre-Design
+status: draft
+version: 1.0
+depends_on:
+  - SYS_INTENT_AUTOMATION_BOUNDARY@1.1
+  - RECIPE_SPEC_V1@1.0
+  - SAFETY_CONTROLLER_V1@1.0
+  - SYSTEM_DOWN@1.0
+review_scope:
+  - scope
+  - architecture
+  - safety
+  - hal
+  - backlog
+---
+
 # Предпроект v1: контроллер пивоварни (STAM)
 
 Статус: черновик предпроекта v1. Основан на `apps/brewery/docs/plan.md` и `apps/brewery/docs/plan_ql.md`, с фокусом на реализацию **v1**.

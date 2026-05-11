@@ -1,3 +1,15 @@
+---
+doc_id: BREWERY_PLAN_QL_REFERENCE
+title: Brewery Controller Extended Project Notes
+status: reference
+version: 0.1
+depends_on: []
+review_scope:
+  - historical_context
+  - domain_notes
+  - safety_notes
+---
+
 # Общий план разработки контроллера пивоварни
 
 ## Цель проекта
