@@ -35,6 +35,47 @@ STAM is an answer to this. It defines:
 4. Connect everything via typed channels
 5. Non-RT side (logging, analytics, config) drains from the same channels
 
+```text
+                                +----------------------+
+                                |      RT DOMAIN       |
+                                +----------------------+
+                                                       
++=================+                                                  +====================+
+| Task wrapper 1  |         +-----------------------+                | Task wrapper 2     |
+| +-------------+ |         |  Snapshot  Channel    |                | +----------------+ |
+| | Sensor task | |--State->|   dbl_buffer_seqlock  |---State------> | |Controller task | |
+| +-------------+ |         +-----------------------+                | +----------------+ |  
++=================+                                                  +====================+ 
+    |                                                                       |
+    | Event                                                                 | Event
+    v                                                                       v
++---------------+                                                    +----------------------+ 
+| Event Channel |                                                    |  Event Channel       |
+|  spsc_ring    |                                                    | spsc_ring_drop_oldest|
++---------------+                                                    +----------------------+ 
+       |                                                                 |
++------------------------------------- NON-RT DOMAIN --------------------------------------------+
+       |                                                                 |
+     Event                                                              Event   
+       v                                                                 v
++=================+                                                  +====================+
+| Task wrapper 3  |         +-----------------------+                |  Task wrapper 4    |
+| +-------------+ |         | Snapshot  Channel     |                | +----------------+ |
+| | Logger task | |---State>|  mailbox2slot         |----State-----> | |Persistence task| |
+| +-------------+ |         +-----------------------+                | +----------------+ |  
++=================+                                                  +====================+ 
+
++------------------------------------------- Core -----------------------------------------------+
+
+                              +----------------------+
+                              | Task System Registry |
+                              | Channel Wiring       |
+                              | Scheduler            |
+                              +----------------------+
+
+
+```
+
 Result: a system where every communication path has a defined contract and every domain boundary is explicit.
 
 ## What STAM is for
