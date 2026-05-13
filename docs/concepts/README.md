@@ -8,9 +8,20 @@
 
 This directory is **not** normative documentation and **not** source-of-truth for implementation contracts.
 
-## Mandatory Rule
+The concepts directory intentionally preserves architectural exploration,
+constraint analysis, failed approaches, and intermediate reasoning steps.
+
+These documents are kept because they explain why certain architectural
+constraints and contracts exist.
+
+
+## Repository convention
 
 Do not use files from `docs/concepts/*` as a final specification for coding/review decisions.
+
+Accepted architecture and implementation guarantees are migrated into
+contracts and architecture documents once considered stable enough
+for implementation and review.
 
 ## Source-of-Truth Locations
 
