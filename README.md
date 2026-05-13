@@ -212,18 +212,66 @@ degradation level as an explicit signal + metrics.
 
 ## Roadmap
 
-- [x] Core RT primitives + portability layer
-- [ ] RT logger publish API + non-RT drain/sink pipeline
-- [ ] Brewery RT domain skeleton (sensors → control → actuators → log)
-- [ ] Safety + degradation contracts (docs + code)
-- [ ] PC/Linux simulation + unit/property tests
-- [ ] Port to STM32
+### Foundation layer
+
+- [x] RT primitives and portability layer
+- [x] Contracts-first communication model
+- [x] UP/SMP semantic separation
+- [x] CI + unit tests
+
+### Execution model
+
+- [ ] Task registration and lifecycle model
+- [ ] System registry and topology sealing
+- [ ] Scheduler abstraction and execution domains
+- [ ] RT/non-RT deployment policies
+
+### Communication and observability
+
+- [ ] RT event publishing pipeline
+- [ ] non-RT drain/sink infrastructure
+- [ ] Telemetry and degradation signaling
+- [ ] Recovery/replay semantics exploration
+
+### Reference applications
+
+- [ ] Minimal STM32 deployment
+- [ ] Brewery control reference application
+- [ ] Linux/PC simulation environment
+
+### Safety and reliability
+
+- [ ] Safety contracts and escalation FSM
+- [ ] Fault/degradation policies
+- [ ] Watchdog topology validation
+- [ ] Failure-mode documentation (FMEA-oriented)
+
 
 ## Getting started
 
-Not yet formalized as a single documented flow.
-Interim entry points:
+### Stable / usable now
 
-- `apps/minimal` — basic boot
+The primitives layer is already usable as a standalone library:
+
+- `primitives/` — RT-safe synchronization and state-transfer primitives
+- contracts and invariants documented
+- unit-tested
+- CI-validated
+
+Core examples:
+
+- `apps/minimal` — minimal boot/setup
 - `apps/demo/trivial_tasks` — minimal RT/non-RT interaction
-- `apps/brewery` — full reference scenario
+
+### Experimental / evolving
+
+The execution model and composition layer are still under active development:
+
+- task registry
+- topology wiring
+- scheduler model
+- deployment/runtime semantics
+
+Reference exploration:
+
+- `apps/brewery` — architecture and safety-oriented reference application
