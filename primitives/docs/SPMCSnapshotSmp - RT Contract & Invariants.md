@@ -1,6 +1,6 @@
 # SPMCSnapshotSmp (SPMC Snapshot Channel, SMP-safe)
 
-`primitives/docs/SPMCSnapshotSmp - RT Contract & Invariants.md` · Revision 1.1 - March 2026
+`primitives/docs/SPMCSnapshotSmp - RT Contract & Invariants.md` · Revision 1.2 - May 2026
 
 ---
 
@@ -40,8 +40,9 @@ Handle issuance guards in code rely on this contract.
 
 ```
 slots[0..K-1]    - data slots of type T
-refcnt[0..K-1]   - atomic<uint8_t>, exact number of readers holding slot i
-busy_mask        - atomic<signal_mask_t>, conservative busy bitmap for writer
+seq[0..K-1]      - atomic<uint32_t>, per-slot sequence counters
+refcnt[0..K-1]   - atomic<uint8_t>, counted readers holding slot i
+busy_mask        - atomic<signal_mask_t>, writer slot-selection coordination mask
 published        - atomic<uint8_t>, current published slot index
 initialized      - atomic<bool>, false before first publish, true after
 ```
@@ -50,8 +51,9 @@ initialized      - atomic<bool>, false before first publish, true after
 
 | Atomic | Writer | Readers | Purpose |
 |---|---|---|---|
-| `busy_mask` | load(acquire) | fetch_or/fetch_and | slot claim visibility to writer |
-| `refcnt[i]` | no writes | fetch_add/fetch_sub | precise concurrent reader count |
+| `seq[i]` | fetch_add(release) before/after slot write | load(acquire) before/after payload copy | torn-read acceptance barrier |
+| `busy_mask` | load(acquire) | fetch_or/fetch_and | slot-selection coordination mask |
+| `refcnt[i]` | no writes | fetch_add/fetch_sub | counted reader claim/release |
 | `published` | store(release), load(acquire) | load(acquire) | published slot index |
 | `initialized` | store(release) | load(acquire) | first-publication signal |
 
@@ -72,19 +74,25 @@ Stream-level behavior for reader is lock-free: misses are possible under content
 
 ---
 
-## Writer Slot Availability Theorem (K = N + 2)
+## Writer Candidate Selection (K = N + 2)
 
-At any time there exists at least one slot `j` such that:
-* `busy_mask[j] == 0` (not claimed by readers)
+For a loaded coordination mask, writer selects a slot `j` such that:
+* `busy_mask[j] == 0` in the observed mask
 * `j != published` (not currently published)
 
 Reason:
-* at most `N` slots can be reader-claimed simultaneously;
+* at most `N` readers can hold counted claims simultaneously;
 * with `K = N + 2`, at least 2 slots are free;
 * at most one free slot is currently published;
 * therefore at least one free non-published slot always exists.
 
 Consequence: writer always has a valid candidate and stays wait-free.
+
+Important: `busy_mask`/`refcnt` are a coordination mechanism for slot selection,
+not the sole torn-read safety proof. Under concurrent readers sharing one
+published slot, there can be transient recycling windows where writer and reader
+overlap on a slot selected earlier by that reader. Such overlap is allowed by
+the protocol and is rejected by per-slot `seq` verification.
 
 ---
 
@@ -99,7 +107,10 @@ void publish(const T& value) noexcept {
     const uint32_t candidates = ~busy & ~(1u << pub) & all_mask;
     const uint8_t j           = ctz(candidates);  // candidates != 0 by theorem
 
+    seq[j].fetch_add(1u, std::memory_order_release);  // odd: write in progress
     slots[j] = value;
+    seq[j].fetch_add(1u, std::memory_order_release);  // even: stable
+
     published.store(j, std::memory_order_release);
     initialized.store(true, std::memory_order_release);  // idempotent
 }
@@ -124,7 +135,25 @@ bool try_read(T& out) noexcept {
         return false;
     }
 
-    out = slots[i];
+    const uint32_t s1 = seq[i].load(std::memory_order_acquire);
+    if (s1 & 1u) {
+        if (refcnt[i].fetch_sub(1u, std::memory_order_acq_rel) == 1u) {
+            busy_mask.fetch_and(~(1u << i), std::memory_order_release);
+        }
+        return false;
+    }
+
+    T tmp = slots[i];
+
+    const uint32_t s2 = seq[i].load(std::memory_order_acquire);
+    if (s2 != s1) {
+        if (refcnt[i].fetch_sub(1u, std::memory_order_acq_rel) == 1u) {
+            busy_mask.fetch_and(~(1u << i), std::memory_order_release);
+        }
+        return false;
+    }
+
+    out = tmp;
 
     if (refcnt[i].fetch_sub(1u, std::memory_order_acq_rel) == 1u) {
         busy_mask.fetch_and(~(1u << i), std::memory_order_release);
@@ -149,11 +178,11 @@ Only readers modify `busy_mask` and `refcnt[i]`.
 
 Writer chooses `j` from `candidates = ~busy_mask & ~(1 << published) & all_mask`; hence `j != published`.
 
-### I4. Reader reads only claimed slot
+### I4. Reader copies only under counted claim
 
 Reader copies `slots[i]` only after claim is set and before claim is released.
 
-### I5. Claim/release ordering
+### I5. Claim/release coordination
 
 Set order:
 1. `busy_mask.fetch_or(1<<i, acq_rel)`
@@ -163,14 +192,28 @@ Release order:
 1. `refcnt[i].fetch_sub(1, acq_rel)`
 2. if last reader: `busy_mask.fetch_and(~(1<<i), release)`
 
-Strict implication:
-`busy_mask[i] == 0 => refcnt[i] == 0`.
+This coordination helps writer avoid slots observed as reader-busy while keeping
+the writer path wait-free. It is not the sole proof that writer-reader slot
+overlap is impossible.
 
-### I6. Re-verify gate
+### I6. Publication re-verify gate
 
-Reader accepts data only if `published` is unchanged between initial load and post-claim re-check (`i2 == i`).
+Reader proceeds to payload-copy verification only if `published` is unchanged
+between initial load and post-claim re-check (`i2 == i`). If it changed, the
+attempt is a single-shot miss and returns `false`.
 
-### I7. Initialized monotonicity
+### I7. Per-slot sequence acceptance gate
+
+Reader accepts payload only if the same even `seq[i]` value is observed before
+and after copying `slots[i]`.
+
+If writer overlaps the copy window:
+* the first sequence load may be odd, or
+* the second sequence load differs from the first.
+
+In both cases `try_read()` returns `false` and does not publish `tmp` into `out`.
+
+### I8. Initialized monotonicity
 
 `initialized` changes `false -> true` after first publish and never returns to `false`.
 
@@ -180,12 +223,11 @@ Reader accepts data only if `published` is unchanged between initial load and po
 
 ### G1. Snapshot consistency
 
-If `try_read(out)` returns `true`, `out` is a consistent snapshot for that invocation.
+If `try_read(out)` returns `true`, `out` is a stable, non-torn snapshot.
 
-Implementation note (defensive):
-reader additionally verifies a per-slot sequence counter around the payload copy.
-If a slot is overwritten during the read window (including ABA-style republish),
-`try_read()` returns `false` rather than accepting a torn snapshot.
+This guarantee is provided by per-slot sequence verification around the payload
+copy. If a slot is overwritten during the read window (including ABA-style
+republish), `try_read()` returns `false` rather than accepting a torn snapshot.
 
 ### G2. SMP memory visibility
 
@@ -193,7 +235,9 @@ If a slot is overwritten during the read window (including ABA-style republish),
 
 ### G3. Latest-wins
 
-Reader obtains a recent snapshot; intermediate writes may be skipped.
+Reader obtains a recent stable snapshot; intermediate writes may be skipped.
+Under concurrent publication, a successful read is not guaranteed to be the
+newest value at method return time.
 
 ### G4. Bounded per-call cost
 
@@ -209,7 +253,8 @@ The primitive is a state channel, not an event queue.
 
 `try_read()` returns `false` when:
 * no data has been published yet (`initialized == false`),
-* publication changed between claim and re-verify (`i2 != i`).
+* publication changed between claim and re-verify (`i2 != i`),
+* per-slot sequence verification detects an overlapping slot write.
 
 No internal retries are performed.
 
