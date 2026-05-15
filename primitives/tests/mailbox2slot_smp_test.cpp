@@ -26,41 +26,36 @@ using namespace stam::primitives;
 // ---------------------------------------------------------------------------
 // Minimal test harness (file-local counters)
 // ---------------------------------------------------------------------------
-namespace stam::primitives
+namespace stam::primitives {
+template <typename T> class Mailbox2SlotSmpTest
 {
-    template <typename T>
-    class Mailbox2SlotSmpTest
+  public:
+    static bool ctrl_has_value(const Mailbox2SlotSmp<T> &m2s) noexcept
     {
-    public:
-        static bool ctrl_has_value(const Mailbox2SlotSmpCore<T> &core) noexcept
-        {
-            return core.ctrl.has_value.load(std::memory_order_relaxed);
-        }
-        static uint8_t ctrl_published(const Mailbox2SlotSmpCore<T> &core) noexcept
-        {
-            return core.ctrl.published.load(std::memory_order_relaxed);
-        }
-        static uint32_t seqs_seq(const Mailbox2SlotSmpCore<T> &core, uint32_t i) noexcept
-        {
-            return core.seqs[i].seq.load(std::memory_order_relaxed);
-        }
-        static bool seqs_even(const Mailbox2SlotSmpCore<T> &core, uint32_t i) noexcept
-        {
-            return (seqs_seq(core, i) & 1u) == 0u;
-        }
-        static const void *slots_ptr(const Mailbox2SlotSmpCore<T> &core, uint32_t i) noexcept
-        {
-            return &core.slots[i];
-        }
-        static const void *seqs_ptr(const Mailbox2SlotSmpCore<T> &core, uint32_t i) noexcept
-        {
-            return &core.seqs[i];
-        }
-        static const void *ctrl_ptr(const Mailbox2SlotSmpCore<T> &core) noexcept
-        {
-            return &core.ctrl;
-        }
-    };
+        return m2s.core_.ctrl.has_value.load(std::memory_order_relaxed);
+    }
+    static uint8_t ctrl_published(const Mailbox2SlotSmp<T> &m2s) noexcept
+    {
+        return m2s.core_.ctrl.published.load(std::memory_order_relaxed);
+    }
+    static uint32_t seqs_seq(const Mailbox2SlotSmp<T> &m2s, uint32_t i) noexcept
+    {
+        return m2s.core_.seqs[i].seq.load(std::memory_order_relaxed);
+    }
+    static bool seqs_even(const Mailbox2SlotSmp<T> &m2s, uint32_t i) noexcept
+    {
+        return (seqs_seq(m2s, i) & 1u) == 0u;
+    }
+    static const void *slots_ptr(const Mailbox2SlotSmp<T> &m2s, uint32_t i) noexcept
+    {
+        return &m2s.core_.slots[i];
+    }
+    static const void *seqs_ptr(const Mailbox2SlotSmp<T> &m2s, uint32_t i) noexcept
+    {
+        return &m2s.core_.seqs[i];
+    }
+    static const void *ctrl_ptr(const Mailbox2SlotSmp<T> &m2s) noexcept { return &m2s.core_.ctrl; }
+};
 } // namespace stam::primitives
 
 static int g_total = 0;
@@ -97,10 +92,7 @@ struct LargePod
 // Contract tests: static / compile-time checks
 // ---------------------------------------------------------------------------
 
-TEST(test_static_trivially_copyable)
-{
-    [[maybe_unused]] Mailbox2SlotSmp<Pod32> mb;
-}
+TEST(test_static_trivially_copyable) { [[maybe_unused]] Mailbox2SlotSmp<Pod32> mb; }
 
 TEST(test_lock_free_atomics)
 {
@@ -120,12 +112,12 @@ TEST(test_concepts)
 TEST(test_initial_state)
 {
     Mailbox2SlotSmp<Pod32> mb;
-    EXPECT(!Mailbox2SlotSmpTest<Pod32>::ctrl_has_value(mb.core()));
-    EXPECT(Mailbox2SlotSmpTest<Pod32>::ctrl_published(mb.core()) == 0u);
+    EXPECT(!Mailbox2SlotSmpTest<Pod32>::ctrl_has_value(mb));
+    EXPECT(Mailbox2SlotSmpTest<Pod32>::ctrl_published(mb) == 0u);
     // All seq counters must start at 0 (even = quiescent).
     for (int i = 0; i < 2; ++i)
     {
-        EXPECT(Mailbox2SlotSmpTest<Pod32>::seqs_even(mb.core(), i));
+        EXPECT(Mailbox2SlotSmpTest<Pod32>::seqs_even(mb, i));
     }
 }
 
@@ -208,10 +200,10 @@ TEST(test_has_value_set_after_first_publish)
 {
     Mailbox2SlotSmp<Pod32> mb;
 
-    EXPECT(!Mailbox2SlotSmpTest<Pod32>::ctrl_has_value(mb.core()));
+    EXPECT(!Mailbox2SlotSmpTest<Pod32>::ctrl_has_value(mb));
     auto writer = mb.writer();
     writer.write({1, 1});
-    EXPECT(Mailbox2SlotSmpTest<Pod32>::ctrl_has_value(mb.core()));
+    EXPECT(Mailbox2SlotSmpTest<Pod32>::ctrl_has_value(mb));
 }
 
 TEST(test_seq_even_after_publish)
@@ -223,13 +215,13 @@ TEST(test_seq_even_after_publish)
     writer.write({1, 2});
     for (int i = 0; i < 2; ++i)
     {
-        EXPECT(Mailbox2SlotSmpTest<Pod32>::seqs_even(mb.core(), i));
+        EXPECT(Mailbox2SlotSmpTest<Pod32>::seqs_even(mb, i));
     }
 
     writer.write({3, 4});
     for (int i = 0; i < 2; ++i)
     {
-        EXPECT(Mailbox2SlotSmpTest<Pod32>::seqs_even(mb.core(), i));
+        EXPECT(Mailbox2SlotSmpTest<Pod32>::seqs_even(mb, i));
     }
 }
 
@@ -239,10 +231,10 @@ TEST(test_published_alternates)
     Mailbox2SlotSmp<Pod32> mb;
     auto writer = mb.writer();
 
-    uint8_t prev = Mailbox2SlotSmpTest<Pod32>::ctrl_published(mb.core());
+    uint8_t prev = Mailbox2SlotSmpTest<Pod32>::ctrl_published(mb);
     // uint8_t prev = mb.core().ctrl.published.load();
     writer.write({1, 1});
-    uint8_t cur = Mailbox2SlotSmpTest<Pod32>::ctrl_published(mb.core());
+    uint8_t cur = Mailbox2SlotSmpTest<Pod32>::ctrl_published(mb);
     // uint8_t cur = mb.core().ctrl.published.load();
     EXPECT(cur != prev); // switched back
 }
@@ -282,16 +274,14 @@ TEST(test_interleaved_publish_read)
 TEST(test_writer_guard_fail_fast)
 {
     Mailbox2SlotSmp<Pod32> mb;
-    const bool aborted = stam::tests::expect_double_issue_abort([&]
-                                                                { (void)mb.writer(); });
+    const bool aborted = stam::tests::expect_double_issue_abort([&] { (void)mb.writer(); });
     EXPECT(aborted);
 }
 
 TEST(test_reader_guard_fail_fast)
 {
     Mailbox2SlotSmp<Pod32> mb;
-    const bool aborted = stam::tests::expect_double_issue_abort([&]
-                                                                { (void)mb.reader(); });
+    const bool aborted = stam::tests::expect_double_issue_abort([&] { (void)mb.reader(); });
     EXPECT(aborted);
 }
 
@@ -304,8 +294,7 @@ TEST(test_slots_cacheline_aligned)
     Mailbox2SlotSmp<Pod32> mb;
     for (int i = 0; i < 2; ++i)
     {
-        const auto addr = reinterpret_cast<uintptr_t>(
-            Mailbox2SlotSmpTest<Pod32>::slots_ptr(mb.core(), i));
+        const auto addr = reinterpret_cast<uintptr_t>(Mailbox2SlotSmpTest<Pod32>::slots_ptr(mb, i));
         EXPECT(addr % SYS_CACHELINE_BYTES == 0u);
     }
 }
@@ -315,8 +304,7 @@ TEST(test_seqs_cacheline_aligned)
     Mailbox2SlotSmp<Pod32> mb;
     for (int i = 0; i < 2; ++i)
     {
-        const auto addr = reinterpret_cast<uintptr_t>(
-            Mailbox2SlotSmpTest<Pod32>::seqs_ptr(mb.core(), i));
+        const auto addr = reinterpret_cast<uintptr_t>(Mailbox2SlotSmpTest<Pod32>::seqs_ptr(mb, i));
         EXPECT(addr % SYS_CACHELINE_BYTES == 0u);
     }
 }
@@ -324,8 +312,7 @@ TEST(test_seqs_cacheline_aligned)
 TEST(test_ctrl_cacheline_aligned)
 {
     Mailbox2SlotSmp<Pod32> mb;
-    const auto addr = reinterpret_cast<uintptr_t>(
-        Mailbox2SlotSmpTest<Pod32>::ctrl_ptr(mb.core()));
+    const auto addr = reinterpret_cast<uintptr_t>(Mailbox2SlotSmpTest<Pod32>::ctrl_ptr(mb));
     EXPECT(addr % SYS_CACHELINE_BYTES == 0u);
 }
 
@@ -333,10 +320,8 @@ TEST(test_seq0_separate_from_seq1)
 {
     // Each seq counter on its own cacheline — no false sharing between them.
     Mailbox2SlotSmp<Pod32> mb;
-    const auto a0 = reinterpret_cast<uintptr_t>(
-        Mailbox2SlotSmpTest<Pod32>::seqs_ptr(mb.core(), 0));
-    const auto a1 = reinterpret_cast<uintptr_t>(
-        Mailbox2SlotSmpTest<Pod32>::seqs_ptr(mb.core(), 1));
+    const auto a0 = reinterpret_cast<uintptr_t>(Mailbox2SlotSmpTest<Pod32>::seqs_ptr(mb, 0));
+    const auto a1 = reinterpret_cast<uintptr_t>(Mailbox2SlotSmpTest<Pod32>::seqs_ptr(mb, 1));
     const auto diff = static_cast<ptrdiff_t>(a1) - static_cast<ptrdiff_t>(a0);
     EXPECT(std::abs(diff) >= static_cast<ptrdiff_t>(SYS_CACHELINE_BYTES));
 }
@@ -356,25 +341,29 @@ TEST(test_stress_no_torn_read)
     std::atomic<bool> done{false};
     std::atomic<int> torn{0};
 
-    std::thread writer_thread([&]
-                              {
+    std::thread writer_thread([&] {
         auto writer = mb.writer();
-        for (int i = 1; i <= kFrames; ++i) {
+        for (int i = 1; i <= kFrames; ++i)
+        {
             writer.write({i, -i});
         }
-        done.store(true, std::memory_order_release); });
+        done.store(true, std::memory_order_release);
+    });
 
-    std::thread reader_thread([&]
-                              {
+    std::thread reader_thread([&] {
         auto reader = mb.reader();
         Pod32 out{};
-        while (!done.load(std::memory_order_acquire) || out.x != kFrames) {
-            if (reader.try_read(out)) {
-                if (out.x != -out.y) {
+        while (!done.load(std::memory_order_acquire) || out.x != kFrames)
+        {
+            if (reader.try_read(out))
+            {
+                if (out.x != -out.y)
+                {
                     torn.fetch_add(1, std::memory_order_relaxed);
                 }
             }
-        } });
+        }
+    });
 
     writer_thread.join();
     reader_thread.join();
@@ -383,7 +372,7 @@ TEST(test_stress_no_torn_read)
     // After all threads exit, all seq counters must be even.
     for (int i = 0; i < 2; ++i)
     {
-        EXPECT(Mailbox2SlotSmpTest<Pod32>::seqs_even(mb.core(), i));
+        EXPECT(Mailbox2SlotSmpTest<Pod32>::seqs_even(mb, i));
     }
 }
 
@@ -394,12 +383,13 @@ TEST(test_stress_latest_wins_after_writer_done)
 
     Mailbox2SlotSmp<Pod32> mb;
 
-    std::thread writer_thread([&]
-                              {
+    std::thread writer_thread([&] {
         auto writer = mb.writer();
-        for (int i = 1; i <= kFrames; ++i) {
+        for (int i = 1; i <= kFrames; ++i)
+        {
             writer.write({i, i});
-        } });
+        }
+    });
     writer_thread.join();
 
     auto reader = mb.reader();
@@ -421,27 +411,31 @@ TEST(test_stress_sustained)
     std::atomic<int> torn{0};
     std::atomic<int> reads{0};
 
-    std::thread writer_thread([&]
-                              {
+    std::thread writer_thread([&] {
         auto writer = mb.writer();
         int i = 0;
-        while (!stop.load(std::memory_order_relaxed)) {
+        while (!stop.load(std::memory_order_relaxed))
+        {
             ++i;
             writer.write({i, -i});
-        } });
+        }
+    });
 
-    std::thread reader_thread([&]
-                              {
+    std::thread reader_thread([&] {
         auto reader = mb.reader();
         Pod32 out{};
-        while (!stop.load(std::memory_order_relaxed)) {
-            if (reader.try_read(out)) {
+        while (!stop.load(std::memory_order_relaxed))
+        {
+            if (reader.try_read(out))
+            {
                 reads.fetch_add(1, std::memory_order_relaxed);
-                if (out.x != -out.y) {
+                if (out.x != -out.y)
+                {
                     torn.fetch_add(1, std::memory_order_relaxed);
                 }
             }
-        } });
+        }
+    });
 
     std::this_thread::sleep_for(kDuration);
     stop.store(true, std::memory_order_release);
@@ -453,7 +447,7 @@ TEST(test_stress_sustained)
     EXPECT(reads.load() > 0);
     for (int i = 0; i < 2; ++i)
     {
-        EXPECT(Mailbox2SlotSmpTest<Pod32>::seqs_even(mb.core(), i));
+        EXPECT(Mailbox2SlotSmpTest<Pod32>::seqs_even(mb, i));
     }
 }
 
@@ -467,26 +461,30 @@ TEST(test_stress_write_alias)
     std::atomic<bool> stop{false};
     std::atomic<int> torn{0};
 
-    std::thread writer_thread([&]
-                              {
+    std::thread writer_thread([&] {
         auto writer = mb.writer();
         int i = 0;
-        while (!stop.load(std::memory_order_relaxed)) {
+        while (!stop.load(std::memory_order_relaxed))
+        {
             ++i;
-            writer.write({i, -i});  // unified API
-        } });
+            writer.write({i, -i}); // unified API
+        }
+    });
 
-    std::thread reader_thread([&]
-                              {
+    std::thread reader_thread([&] {
         auto reader = mb.reader();
         Pod32 out{};
-        while (!stop.load(std::memory_order_relaxed)) {
-            if (reader.try_read(out)) {
-                if (out.x != -out.y) {
+        while (!stop.load(std::memory_order_relaxed))
+        {
+            if (reader.try_read(out))
+            {
+                if (out.x != -out.y)
+                {
                     torn.fetch_add(1, std::memory_order_relaxed);
                 }
             }
-        } });
+        }
+    });
 
     std::this_thread::sleep_for(kDuration);
     stop.store(true, std::memory_order_release);

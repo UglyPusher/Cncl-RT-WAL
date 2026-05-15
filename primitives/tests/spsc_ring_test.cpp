@@ -31,34 +31,32 @@
 
 using namespace stam::primitives;
 
-namespace stam::primitives
+namespace stam::primitives {
+template <typename T, size_t Capacity> class SPSCRingTest
 {
-    template <typename T, size_t Capacity>
-    class SPSCRingTest
+  public:
+    static size_t get_head_value(const SPSCRing<T, Capacity> &rng) noexcept
     {
-    public:
-        static size_t get_head_value(const SPSCRingCore<T, Capacity> &core_) noexcept
-        {
-            return core_.head_.load();
-        }
-        static size_t get_tail_value(const SPSCRingCore<T, Capacity> &core_) noexcept
-        {
-            return core_.tail_.load();
-        }
-        static const char *get_head_addr(const SPSCRingCore<T, Capacity> &core_) noexcept
-        {
-            return reinterpret_cast<const char *>(&core_.head_);
-        }
-        static const char *get_tail_addr(const SPSCRingCore<T, Capacity> &core_) noexcept
-        {
-            return reinterpret_cast<const char *>(&core_.tail_);
-        }
-        static const char *get_buffer_addr(const SPSCRingCore<T, Capacity> &core_) noexcept
-        {
-            return reinterpret_cast<const char *>(&core_.buffer_[0]);
-        }
-    };
-}
+        return rng.core_.head_.load();
+    }
+    static size_t get_tail_value(const SPSCRing<T, Capacity> &rng) noexcept
+    {
+        return rng.core_.tail_.load();
+    }
+    static const char *get_head_addr(const SPSCRing<T, Capacity> &rng) noexcept
+    {
+        return reinterpret_cast<const char *>(&rng.core_.head_);
+    }
+    static const char *get_tail_addr(const SPSCRing<T, Capacity> &rng) noexcept
+    {
+        return reinterpret_cast<const char *>(&rng.core_.tail_);
+    }
+    static const char *get_buffer_addr(const SPSCRing<T, Capacity> &rng) noexcept
+    {
+        return reinterpret_cast<const char *>(&rng.core_.buffer_[0]);
+    }
+};
+} // namespace stam::primitives
 
 // ---------------------------------------------------------------------------
 // Minimal test harness (same conventions as dbl_buffer_test.cpp)
@@ -100,22 +98,16 @@ static constexpr size_t kCap = 16; // power of two, usable = 15
 // Contract tests: static / compile-time checks
 // ---------------------------------------------------------------------------
 
-TEST(test_static_assert_trivially_copyable)
-{
-    [[maybe_unused]] SPSCRing<Pod32, kCap> ring;
-}
+TEST(test_static_assert_trivially_copyable) { [[maybe_unused]] SPSCRing<Pod32, kCap> ring; }
 
-TEST(test_lock_free)
-{
-    EXPECT(std::atomic<size_t>::is_always_lock_free);
-}
+TEST(test_lock_free) { EXPECT(std::atomic<size_t>::is_always_lock_free); }
 
 TEST(test_core_initial_state)
 {
     SPSCRing<Pod32, kCap> ring;
     using TestR = SPSCRingTest<Pod32, kCap>;
-    EXPECT(TestR::get_head_value(ring.core()) == 0u);
-    EXPECT(TestR::get_tail_value(ring.core()) == 0u);
+    EXPECT(TestR::get_head_value(ring) == 0u);
+    EXPECT(TestR::get_tail_value(ring) == 0u);
 }
 
 TEST(test_usable_capacity)
@@ -305,16 +297,14 @@ TEST(test_wrap_around)
 TEST(test_writer_guard_fail_fast)
 {
     SPSCRing<Pod32, kCap> ring;
-    const bool aborted = stam::tests::expect_double_issue_abort([&]
-                                                                { (void)ring.writer(); });
+    const bool aborted = stam::tests::expect_double_issue_abort([&] { (void)ring.writer(); });
     EXPECT(aborted);
 }
 
 TEST(test_reader_guard_fail_fast)
 {
     SPSCRing<Pod32, kCap> ring;
-    const bool aborted = stam::tests::expect_double_issue_abort([&]
-                                                                { (void)ring.reader(); });
+    const bool aborted = stam::tests::expect_double_issue_abort([&] { (void)ring.reader(); });
     EXPECT(aborted);
 }
 
@@ -333,29 +323,34 @@ TEST(test_spsc_stress_fifo_no_loss)
     std::atomic<int> received{0};
     std::atomic<int> order_errors{0};
 
-    std::thread writer_thread([&]
-                              {
+    std::thread writer_thread([&] {
         auto writer = ring.writer();
         int i = 0;
-        while (i < kItems) {
-            if (writer.push(i)) ++i;
+        while (i < kItems)
+        {
+            if (writer.push(i))
+                ++i;
             // spin on full — acceptable in stress test
-        } });
+        }
+    });
 
-    std::thread reader_thread([&]
-                              {
+    std::thread reader_thread([&] {
         auto reader = ring.reader();
         int expected = 0;
-        while (expected < kItems) {
+        while (expected < kItems)
+        {
             int32_t val{};
-            if (reader.pop(val)) {
-                if (val != expected) {
+            if (reader.pop(val))
+            {
+                if (val != expected)
+                {
                     order_errors.fetch_add(1, std::memory_order_relaxed);
                 }
                 ++expected;
             }
         }
-        received.store(expected, std::memory_order_release); });
+        received.store(expected, std::memory_order_release);
+    });
 
     writer_thread.join();
     reader_thread.join();
@@ -373,27 +368,32 @@ TEST(test_spsc_stress_no_torn_read)
     SPSCRing<Pod32, kRingCap> ring;
     std::atomic<int> torn{0};
 
-    std::thread writer_thread([&]
-                              {
+    std::thread writer_thread([&] {
         auto writer = ring.writer();
         int i = 1;
-        while (i <= kItems) {
-            if (writer.push({i, -i})) ++i;
-        } });
+        while (i <= kItems)
+        {
+            if (writer.push({i, -i}))
+                ++i;
+        }
+    });
 
-    std::thread reader_thread([&]
-                              {
+    std::thread reader_thread([&] {
         auto reader = ring.reader();
         int received = 0;
-        while (received < kItems) {
+        while (received < kItems)
+        {
             Pod32 out{};
-            if (reader.pop(out)) {
-                if (out.x != -out.y) {
+            if (reader.pop(out))
+            {
+                if (out.x != -out.y)
+                {
                     torn.fetch_add(1, std::memory_order_relaxed);
                 }
                 ++received;
             }
-        } });
+        }
+    });
 
     writer_thread.join();
     reader_thread.join();
@@ -413,26 +413,31 @@ TEST(test_spsc_sustained_concurrent)
     std::atomic<int> torn{0};
     std::atomic<int> reads{0};
 
-    std::thread writer_thread([&]
-                              {
+    std::thread writer_thread([&] {
         auto writer = ring.writer();
         int i = 1;
-        while (!stop.load(std::memory_order_relaxed)) {
-            if (writer.push({i, -i})) ++i;
-        } });
+        while (!stop.load(std::memory_order_relaxed))
+        {
+            if (writer.push({i, -i}))
+                ++i;
+        }
+    });
 
-    std::thread reader_thread([&]
-                              {
+    std::thread reader_thread([&] {
         auto reader = ring.reader();
         Pod32 out{};
-        while (!stop.load(std::memory_order_relaxed)) {
-            if (reader.pop(out)) {
+        while (!stop.load(std::memory_order_relaxed))
+        {
+            if (reader.pop(out))
+            {
                 reads.fetch_add(1, std::memory_order_relaxed);
-                if (out.x != -out.y) {
+                if (out.x != -out.y)
+                {
                     torn.fetch_add(1, std::memory_order_relaxed);
                 }
             }
-        } });
+        }
+    });
 
     std::this_thread::sleep_for(kDuration);
     stop.store(true, std::memory_order_release);
@@ -452,8 +457,8 @@ TEST(test_head_tail_on_separate_cache_lines)
 {
     SPSCRing<Pod32, kCap> ring;
     using TestR = SPSCRingTest<Pod32, kCap>;
-    const auto *h = TestR::get_head_addr(ring.core());
-    const auto *t = TestR::get_tail_addr(ring.core());
+    const auto *h = TestR::get_head_addr(ring);
+    const auto *t = TestR::get_tail_addr(ring);
     const auto diff = static_cast<ptrdiff_t>(t - h);
     EXPECT(std::abs(diff) >= static_cast<ptrdiff_t>(SYS_CACHELINE_BYTES));
 }
@@ -463,8 +468,8 @@ TEST(test_buffer_separated_from_tail)
     // pad_ ensures buffer_[0] is not on the same cache line as tail_.
     SPSCRing<Pod32, kCap> ring;
     using TestR = SPSCRingTest<Pod32, kCap>;
-    const auto *t = TestR::get_tail_addr(ring.core());
-    const auto *buf = TestR::get_buffer_addr(ring.core());
+    const auto *t = TestR::get_tail_addr(ring);
+    const auto *buf = TestR::get_buffer_addr(ring);
     const auto diff = static_cast<ptrdiff_t>(buf - t);
     EXPECT(std::abs(diff) >= static_cast<ptrdiff_t>(SYS_CACHELINE_BYTES));
 }

@@ -409,8 +409,16 @@ template <typename T, uint32_t N> class SPMCSnapshot final
         return SPMCSnapshotReader<T, N>(core_);
     }
 
-    SPMCSnapshotCore<T, N> &core() noexcept { return core_; }
-    const SPMCSnapshotCore<T, N> &core() const noexcept { return core_; }
+    // SPMCSnapshotCore<T, N> &core() noexcept { return core_; }
+    // const SPMCSnapshotCore<T, N> &core() const noexcept { return core_; }
+
+    // NOTE: Core is an intentional POD-like carrier of shared state.
+    // Fields are public to make layout and invariants explicit and auditable.
+    friend class SPMCSnapshotWriter<T, N>;
+    friend class SPMCSnapshotReader<T, N>;
+#ifdef STAM_TEST
+    friend class SPMCSnapshotTest<T, N>;
+#endif
 
   private:
     SPMCSnapshotCore<T, N> core_;

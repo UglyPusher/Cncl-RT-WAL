@@ -15,30 +15,25 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-
 using namespace stam::primitives;
 
-namespace stam::primitives
+namespace stam::primitives {
+
+template <typename T, size_t Capacity> class SPSCRingDropOldestTest
 {
-
-    template <typename T, size_t Capacity>
-    class SPSCRingDropOldestTest
+  public:
+    static size_t get_head(const SPSCRingDropOldest<T, Capacity> &rdo) noexcept
     {
-        public:
-        static size_t get_head(const SPSCRingDropOldestCore<T, Capacity> &core_) noexcept
-        {
-            return core_.head_.load();
-            // return core.pub_state.value.load(std::memory_order_relaxed);
-        }
-        static size_t get_tail(const SPSCRingDropOldestCore<T, Capacity> &core_) noexcept
-        {
-            return core_.tail_.load();
-            // return core.pub_state.value.load(std::memory_order_relaxed);
-        }
-    };
-}
-
-
+        return rdo.core_.head_.load();
+        // return core.pub_state.value.load(std::memory_order_relaxed);
+    }
+    static size_t get_tail(const SPSCRingDropOldest<T, Capacity> &rdo) noexcept
+    {
+        return rdo.core_.tail_.load();
+        // return core.pub_state.value.load(std::memory_order_relaxed);
+    }
+};
+} // namespace stam::primitives
 
 // ---------------------------------------------------------------------------
 // Minimal test harness (same conventions as spsc_ring_test.cpp)
@@ -74,17 +69,14 @@ TEST(test_static_assert_trivially_copyable)
     [[maybe_unused]] SPSCRingDropOldest<Pod32, kCap> ring;
 }
 
-TEST(test_lock_free)
-{
-    EXPECT(std::atomic<size_t>::is_always_lock_free);
-}
+TEST(test_lock_free) { EXPECT(std::atomic<size_t>::is_always_lock_free); }
 
 TEST(test_core_initial_state)
 {
     SPSCRingDropOldest<Pod32, kCap> ring;
     using Test_RDO = SPSCRingDropOldestTest<Pod32, kCap>;
-    EXPECT(Test_RDO::get_head(ring.core()) == 0u);
-    EXPECT(Test_RDO::get_tail(ring.core()) == 0u);
+    EXPECT(Test_RDO::get_head(ring) == 0u);
+    EXPECT(Test_RDO::get_tail(ring) == 0u);
 }
 
 TEST(test_usable_capacity)
@@ -162,16 +154,14 @@ TEST(test_fifo_order_without_overflow)
 TEST(test_writer_guard_fail_fast)
 {
     SPSCRingDropOldest<Pod32, kCap> ring;
-    const bool aborted = stam::tests::expect_double_issue_abort([&]
-                                                                { (void)ring.writer(); });
+    const bool aborted = stam::tests::expect_double_issue_abort([&] { (void)ring.writer(); });
     EXPECT(aborted);
 }
 
 TEST(test_reader_guard_fail_fast)
 {
     SPSCRingDropOldest<Pod32, kCap> ring;
-    const bool aborted = stam::tests::expect_double_issue_abort([&]
-                                                                { (void)ring.reader(); });
+    const bool aborted = stam::tests::expect_double_issue_abort([&] { (void)ring.reader(); });
     EXPECT(aborted);
 }
 

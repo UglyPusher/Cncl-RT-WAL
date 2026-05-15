@@ -200,6 +200,12 @@ template <typename T> class DoubleBufferSeqLockReader final
 template <typename T> class DoubleBufferSeqLock final
 {
   public:
+    friend class DoubleBufferSeqLockWriter<T>;
+    friend class DoubleBufferSeqLockReader<T>;
+#ifdef STAM_TEST
+    friend class DoubleBufferSeqLockTest<T>;
+#endif
+
     static constexpr uint32_t max_readers = 1u;
 
     DoubleBufferSeqLock() = default;
@@ -231,8 +237,8 @@ template <typename T> class DoubleBufferSeqLock final
         return DoubleBufferSeqLockReader<T>(core_);
     }
 
-    DoubleBufferSeqLockCore<T> &core() noexcept { return core_; }
-    const DoubleBufferSeqLockCore<T> &core() const noexcept { return core_; }
+    // DoubleBufferSeqLockCore<T> &core() noexcept { return core_; }
+    // const DoubleBufferSeqLockCore<T> &core() const noexcept { return core_; }
 
   private:
     DoubleBufferSeqLockCore<T> core_;
